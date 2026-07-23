@@ -31,14 +31,16 @@ export function assembleWorkflowStepVars(params: {
   genres?: string
   assembledContext?: string
   worldRulesContext?: string
+  userInput?: string
 }): Record<string, string | number | undefined> {
-  const { step, prevOutput, projectName, genres, assembledContext, worldRulesContext } = params
+  const { step, prevOutput, projectName, genres, assembledContext, worldRulesContext, userInput } = params
   const ctx: Record<string, string | number | undefined> = {}
 
   ctx.projectName = projectName ?? ''
   ctx.genres = genres ?? ''
   ctx.dimension = step.label ?? ''
-  if (step.userHint) ctx.userHint = step.userHint
+  const mergedUserHint = [step.userHint?.trim(), userInput?.trim()].filter(Boolean).join('\n')
+  if (mergedUserHint) ctx.userHint = mergedUserHint
 
   // 保留 inputMapping 中非 worldContext 的特定变量(worldContext 由下方通用槽位统一处理)
   if (step.inputMapping && prevOutput) {
@@ -59,8 +61,15 @@ export function assembleWorkflowStepVars(params: {
 /** WorkflowEditor 下拉选项使用的模块键列表（与 prompt-seeds 的 system moduleKey 保持一致） */
 export const ALL_MODULE_KEYS_FOR_WORKFLOW = [
   'worldview.dimension', 'character.generate', 'character.dimension',
+  'worldview.worldbuilding', 'character.design',
+  'story.brief', 'story.ideation', 'story.positioning', 'story.core', 'story.packaging',
+  'research.method', 'prompt.operations',
   'outline.volume', 'outline.chapter',
+  'outline.plot', 'outline.structure', 'outline.long-form', 'outline.short-story', 'outline.serialization',
+  'detail.chapter-planning',
   'chapter.content', 'chapter.continue', 'chapter.polish', 'chapter.expand', 'chapter.de-ai',
+  'chapter.drafting', 'chapter.continuity', 'chapter.line-editing',
+  'review.developmental', 'review.line-editing', 'review.reader-validation',
   'foreshadow.generate', 'story.generate', 'rules.generate', 'detail.scene',
   'geography.concept-map', 'geography.image-map-prompt',
 ] as const

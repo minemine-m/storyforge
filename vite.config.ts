@@ -6,6 +6,7 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
+      injectRegister: null,
       registerType: 'autoUpdate',
       base: '/storyforge/',
       scope: '/storyforge/',
@@ -62,6 +63,9 @@ export default defineConfig({
   base: '/storyforge/',
   server: {
     port: 1111,
+    // CF-1: 端口被占用时直接失败报错，而不是静默换到 1112 —— 避免用户以为在 1111、
+    // 实际打开的却是被旧进程占用的 1111（错误服务 / 重定向循环）。
+    strictPort: true,
     open: '/storyforge/',
     proxy: {
       '/deepseek-proxy': {
@@ -92,6 +96,49 @@ export default defineConfig({
         target: 'https://integrate.api.nvidia.com',
         changeOrigin: true,
         rewrite: (path: string) => path.replace(/^\/nvidia-proxy/, ''),
+        secure: true,
+      },
+      '/doubao-proxy': {
+        target: 'https://ark.cn-beijing.volces.com',
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/doubao-proxy/, ''),
+        secure: true,
+      },
+      '/agnes-proxy': {
+        target: 'https://apihub.agnes-ai.com',
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/agnes-proxy/, ''),
+        secure: true,
+      },
+      '/longcat-proxy': {
+        target: 'https://api.longcat.chat',
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/longcat-proxy/, ''),
+        secure: true,
+      },
+      '/opencode-proxy': {
+        target: 'https://opencode.ai',
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/opencode-proxy/, '/zen/go'),
+        secure: true,
+      },
+      // NS-5 embedding：国内嵌入服务本地代理（绕浏览器 CORS）
+      '/siliconflow-proxy': {
+        target: 'https://api.siliconflow.cn',
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/siliconflow-proxy/, ''),
+        secure: true,
+      },
+      '/qwen-proxy': {
+        target: 'https://dashscope.aliyuncs.com',
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/qwen-proxy/, ''),
+        secure: true,
+      },
+      '/glm-proxy': {
+        target: 'https://open.bigmodel.cn',
+        changeOrigin: true,
+        rewrite: (path: string) => path.replace(/^\/glm-proxy/, ''),
         secure: true,
       },
     },

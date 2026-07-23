@@ -6,16 +6,29 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Plus, Trash2, EyeOff, Eye, FolderPlus, Boxes, ChevronRight, Settings2, X, ChevronUp, ChevronDown, Star,
+  Plus, Trash2, EyeOff, Eye, FolderPlus, Boxes, Settings2, X,
+  Sparkles, Loader2,
 } from 'lucide-react'
-import { CInput, CTextarea } from '../shared/CompositionInput'
 import { useCodexStore } from '../../stores/codex'
 import {
-  CODEX_DOMAIN_LABELS, parseFieldSchema, stringifyFieldSchema, parseEntryFields, stringifyEntryFields,
-  parseEntryRefs, stringifyEntryRefs,
-  type CodexDomain, type CodexCategory, type CodexEntry, type CodexFieldDef,
+  CODEX_DOMAIN_LABELS, parseFieldSchema,
+  type CodexDomain, type CodexCategory, type CodexEntry,
 } from '../../lib/types/codex'
 import type { Project } from '../../lib/types'
+import { useDialog } from '../shared/Dialog'
+import { useAIConfigStore } from '../../stores/ai-config'
+import { useWorldGroupStore } from '../../stores/world-group'
+import { chat, resolveRequestConfig } from '../../lib/ai/client'
+import { getAIConfigRequiredMessage, isAIConfigReady } from '../../lib/ai/config-readiness'
+import {
+  buildCodexExtractPrompt, parseCodexEntries, splitExtractionText,
+} from '../../lib/ai/adapters/structured-extract-adapter'
+import { adopt } from '../../lib/registry/adopt'
+import { useToast } from '../shared/Toast'
+import { uniqueBy } from '../../lib/ai/structured-extraction'
+import { assembleContext } from '../../lib/registry/assemble-context'
+import CodexCategoryFieldsEditor from './CodexCategoryFieldsEditor'
+import CodexEntryDetail from './CodexEntryDetail'
 
 interface Props {
   project: Project
@@ -29,11 +42,17 @@ interface Props {
   fixedCategoryKeys?: string[]
   /** 嵌入模式:去掉外层标题/高度占满,适配面板内嵌 */
   embedded?: boolean
+  /** 当前方面上方的整段全貌，作为 AI 拆分词条的默认来源。 */
+  extractionSourceText?: string
 }
 
 const DOMAINS: CodexDomain[] = ['natural', 'humanity']
 
-export default function CodexPanel({ project, fixedDomain, fixedCategoryKeys, embedded }: Props) {
+export default function CodexPanel({ project, fixedDomain, fixedCategoryKeys, embedded, extractionSourceText = '' }: Props) {
+  const dialog = useDialog()
+  const toast = useToast()
+  const aiConfig = useAIConfigStore(s => s.config)
+  const activeGroupId = useWorldGroupStore(s => s.activeGroupId)
   const projectId = project.id!
   const {
     categories, entries, loadAll,
@@ -54,6 +73,12 @@ export default function CodexPanel({ project, fixedDomain, fixedCategoryKeys, em
   const [showFieldsEditor, setShowFieldsEditor] = useState(false)
   // 词条排序方式:order=手动顺序 / importance=重要度降序 / pinyin=拼音首字母
   const [sortMode, setSortMode] = useState<'order' | 'importance' | 'pinyin'>('order')
+  const [extractOpen, setExtractOpen] = useState(false)
+  const [extractText, setExtractText] = useState('')
+  const [supplementTags, setSupplementTags] = useState(true)
+  const [extracting, setExtracting] = useState(false)
+  const [candidates, setCandidates] = useState<ReturnType<typeof parseCodexEntries>>([])
+  const [selectedCandidates, setSelectedCandidates] = useState<Set<number>>(new Set())
 
   useEffect(() => { loadAll(projectId) }, [projectId, loadAll])
 
@@ -107,7 +132,10 @@ export default function CodexPanel({ project, fixedDomain, fixedCategoryKeys, em
 
   // ── 分类操作 ──
   const handleAddCategory = async () => {
-    const name = window.prompt(`在「${CODEX_DOMAIN_LABELS[domain]}」下新增自定义分类，输入名称：`)?.trim()
+    const name = (await dialog.prompt({
+      title: `在「${CODEX_DOMAIN_LABELS[domain]}」下新增自定义分类`,
+      placeholder: '输入分类名称',
+    }))?.trim()
     if (!name) return
     const id = await addCategory({
       projectId, domain, parentId: null, name, icon: '📁',
@@ -120,7 +148,13 @@ export default function CodexPanel({ project, fixedDomain, fixedCategoryKeys, em
 
   const handleDeleteCategory = async (cat: CodexCategory) => {
     if (cat.builtInKey) return
-    if (!window.confirm(`删除自定义分类「${cat.name}」及其下所有词条？此操作不可撤销。`)) return
+    const ok = await dialog.confirm({
+      title: `删除自定义分类「${cat.name}」？`,
+      message: '其下所有词条也会被删除，此操作不可撤销。',
+      confirmText: '删除',
+      tone: 'danger',
+    })
+    if (!ok) return
     await deleteCategory(cat.id!)
   }
 
@@ -137,9 +171,85 @@ export default function CodexPanel({ project, fixedDomain, fixedCategoryKeys, em
   }
 
   const handleDeleteEntry = async (entry: CodexEntry) => {
-    if (!window.confirm(`删除词条「${entry.name}」？`)) return
+    const ok = await dialog.confirm({
+      title: `删除词条「${entry.name}」？`,
+      message: '此操作不可恢复。',
+      confirmText: '删除',
+      tone: 'danger',
+    })
+    if (!ok) return
     await deleteEntry(entry.id!)
     if (activeEntryId === entry.id) setActiveEntryId(null)
+  }
+
+  const openExtractor = () => {
+    setExtractText(extractionSourceText)
+    setCandidates([])
+    setSelectedCandidates(new Set())
+    setExtractOpen(true)
+  }
+
+  const handleExtractEntries = async () => {
+    if (!activeCat || !extractText.trim()) return
+    const effectiveConfig = resolveRequestConfig(aiConfig, { category: 'codex.extract' }).config
+    if (!isAIConfigReady(effectiveConfig)) { toast.error(getAIConfigRequiredMessage(effectiveConfig)); return }
+    setExtracting(true)
+    try {
+      const schema = parseFieldSchema(activeCat.fieldSchema)
+      const found: ReturnType<typeof parseCodexEntries> = []
+      for (const chunk of splitExtractionText(extractText)) {
+        const source = await assembleContext({
+          projectId,
+          sourceKeys: ['manualText'],
+          manualSourceText: chunk,
+        })
+        const raw = await chat(buildCodexExtractPrompt({
+          categoryName: activeCat.name,
+          sourceText: source.text,
+          fieldSchema: schema,
+          existingNames: [...catEntries.map(e => e.name), ...found.map(e => e.name)],
+          supplementTags,
+        }), aiConfig, { category: 'codex.extract', projectId })
+        found.push(...parseCodexEntries(raw, schema.map(f => f.key)))
+      }
+      const existingNames = new Set(catEntries.map(entry => entry.name.trim().toLocaleLowerCase()))
+      const parsed = uniqueBy(
+        found.filter(item => !existingNames.has(item.name.toLocaleLowerCase())),
+        item => item.name.toLocaleLowerCase(),
+      )
+      setCandidates(parsed)
+      setSelectedCandidates(new Set(parsed.map((_, index) => index)))
+      if (!parsed.length) toast.info('AI 未从这段内容中识别出可独立登记的词条。')
+    } finally {
+      setExtracting(false)
+    }
+  }
+
+  const handleAdoptCandidates = async () => {
+    if (!activeCat) return
+    const chosen = candidates.filter((_, index) => selectedCandidates.has(index))
+    const result = await adopt({
+      projectId,
+      worldGroupId: project.enableMultiWorld ? activeGroupId : null,
+      target: 'codexEntries',
+      mode: 'add-many',
+      data: chosen.map((item, index) => ({
+        categoryId: activeCat.id!,
+        name: item.name,
+        icon: item.icon || activeCat.icon,
+        summary: item.summary,
+        description: item.description,
+        fields: JSON.stringify(item.fields),
+        refs: '{}',
+        tags: JSON.stringify(item.tags),
+        importance: item.importance,
+        order: catEntries.length + index,
+        worldGroupId: project.enableMultiWorld ? activeGroupId : null,
+      })),
+    })
+    await loadAll(projectId)
+    setExtractOpen(false)
+    toast.success(`已写入 ${result.written.length} 个词条${result.skipped.length ? `，跳过 ${result.skipped.length} 个重复项` : ''}。`)
   }
 
   return (
@@ -272,6 +382,13 @@ export default function CodexPanel({ project, fixedDomain, fixedCategoryKeys, em
           </div>
           <div className="m-2 space-y-1.5">
             <button
+              onClick={openExtractor}
+              disabled={!activeCatId}
+              className="w-full px-2 py-1.5 text-xs rounded-lg border border-accent/30 text-accent hover:bg-accent/10 disabled:opacity-40 inline-flex items-center justify-center gap-1"
+            >
+              <Sparkles className="w-3.5 h-3.5" /> AI 从内容拆分词条
+            </button>
+            <button
               onClick={handleAddEntry}
               disabled={!activeCatId}
               className="w-full px-2 py-1.5 text-xs rounded-lg bg-accent text-white hover:bg-accent/90 disabled:opacity-40 inline-flex items-center justify-center gap-1"
@@ -293,10 +410,11 @@ export default function CodexPanel({ project, fixedDomain, fixedCategoryKeys, em
         {/* 右：词条详情 */}
         <div className="flex-1 overflow-y-auto min-w-0">
           {activeEntry && activeCat ? (
-            <EntryDetail
+            <CodexEntryDetail
               key={activeEntry.id}
               entry={activeEntry}
               category={activeCat}
+              allCategories={categories}
               allEntries={entries}
               nameDuplicate={!!activeEntry.name && dupNames.has(activeEntry.name.trim())}
               onChange={(patch) => updateEntry(activeEntry.id!, patch)}
@@ -311,351 +429,62 @@ export default function CodexPanel({ project, fixedDomain, fixedCategoryKeys, em
 
       {/* B1:自定义字段管理弹窗 — 编辑本分类的 fieldSchema(内置类也可改) */}
       {showFieldsEditor && activeCat && (
-        <CategoryFieldsEditor
+        <CodexCategoryFieldsEditor
           category={activeCat}
           onClose={() => setShowFieldsEditor(false)}
           onSave={(fieldSchema) => { updateCategory(activeCat.id!, { fieldSchema }); setShowFieldsEditor(false) }}
         />
       )}
-    </div>
-  )
-}
-
-// ── 自定义字段管理弹窗（编辑分类 fieldSchema · B1） ───────────────────
-const FIELD_TYPES: { value: CodexFieldDef['type']; label: string }[] = [
-  { value: 'text', label: '单行文本' },
-  { value: 'longtext', label: '多行文本' },
-  { value: 'select', label: '下拉选项' },
-  { value: 'number', label: '数字' },
-  { value: 'ref', label: '关联词条' },
-]
-
-function CategoryFieldsEditor({
-  category, onClose, onSave,
-}: {
-  category: CodexCategory
-  onClose: () => void
-  onSave: (fieldSchema: string) => void
-}) {
-  const [defs, setDefs] = useState<CodexFieldDef[]>(() => parseFieldSchema(category.fieldSchema))
-
-  const update = (i: number, patch: Partial<CodexFieldDef>) =>
-    setDefs(defs.map((d, j) => (j === i ? { ...d, ...patch } : d)))
-  const remove = (i: number) => setDefs(defs.filter((_, j) => j !== i))
-  const move = (i: number, dir: -1 | 1) => {
-    const j = i + dir
-    if (j < 0 || j >= defs.length) return
-    const next = [...defs]
-    ;[next[i], next[j]] = [next[j], next[i]]
-    setDefs(next)
-  }
-  const add = () => setDefs([...defs, {
-    key: `f${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`,
-    label: '新字段', type: 'text',
-  }])
-
-  const handleSave = () => {
-    // 去掉 label 为空的字段
-    onSave(stringifyFieldSchema(defs.filter(d => d.label.trim())))
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
-      <div className="bg-bg-surface border border-border rounded-xl w-full max-w-lg max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-          <h3 className="text-sm font-bold text-text-primary flex items-center gap-2">
-            <Settings2 className="w-4 h-4 text-accent" /> 管理「{category.name}」的专属字段
-          </h3>
-          <button onClick={onClose} className="p-1 text-text-muted hover:text-text-primary"><X className="w-4 h-4" /></button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-3 space-y-2">
-          {defs.length === 0 && <p className="text-xs text-text-muted text-center py-4">还没有专属字段,点下方「添加字段」。</p>}
-          {defs.map((def, i) => (
-            <div key={def.key} className="border border-border rounded-lg p-2 space-y-1.5 bg-bg-base">
-              <div className="flex items-center gap-1.5">
-                <input
-                  value={def.label}
-                  onChange={e => update(i, { label: e.target.value })}
-                  placeholder="字段名(如:品级)"
-                  className="flex-1 px-2 py-1 text-sm rounded bg-bg-elevated border border-border focus:outline-none focus:border-accent"
-                />
-                <select
-                  value={def.type}
-                  onChange={e => update(i, { type: e.target.value as CodexFieldDef['type'] })}
-                  className="px-2 py-1 text-xs rounded bg-bg-elevated border border-border"
-                >
-                  {FIELD_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                </select>
-                <button onClick={() => move(i, -1)} disabled={i === 0} className="p-1 text-text-muted hover:text-text-primary disabled:opacity-30"><ChevronUp className="w-3.5 h-3.5" /></button>
-                <button onClick={() => move(i, 1)} disabled={i === defs.length - 1} className="p-1 text-text-muted hover:text-text-primary disabled:opacity-30"><ChevronDown className="w-3.5 h-3.5" /></button>
-                <button onClick={() => remove(i)} className="p-1 text-text-muted hover:text-red-400"><Trash2 className="w-3.5 h-3.5" /></button>
+      {extractOpen && activeCat && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4" onClick={() => setExtractOpen(false)}>
+          <div className="w-full max-w-2xl max-h-[85vh] overflow-y-auto bg-bg-surface border border-border rounded-xl p-4 space-y-3" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-text-primary">AI 拆分「{activeCat.name}」词条</h3>
+                <p className="text-xs text-text-muted">AI 只生成候选，确认后才写入；同名词条会自动合并/跳过。</p>
               </div>
-              {def.type === 'select' && (
-                <input
-                  value={(def.options || []).join(' / ')}
-                  onChange={e => update(i, { options: e.target.value.split('/').map(s => s.trim()).filter(Boolean) })}
-                  placeholder="选项,用 / 分隔(如:常见 / 稀有 / 罕见)"
-                  className="w-full px-2 py-1 text-xs rounded bg-bg-elevated border border-border focus:outline-none focus:border-accent"
-                />
-              )}
-              {def.type === 'ref' && (
-                <input
-                  value={def.refCategory || ''}
-                  onChange={e => update(i, { refCategory: e.target.value.trim() || undefined })}
-                  placeholder="建议关联的内置类 key(可空,如:artifact / mineral)"
-                  className="w-full px-2 py-1 text-xs rounded bg-bg-elevated border border-border focus:outline-none focus:border-accent"
-                />
-              )}
+              <button onClick={() => setExtractOpen(false)}><X className="w-4 h-4 text-text-muted" /></button>
             </div>
-          ))}
-        </div>
-
-        <div className="flex items-center justify-between px-3 py-2.5 border-t border-border">
-          <button onClick={add} className="px-2.5 py-1.5 text-xs rounded-lg border border-dashed border-border text-text-muted hover:text-accent hover:border-accent/50 inline-flex items-center gap-1">
-            <Plus className="w-3.5 h-3.5" /> 添加字段
-          </button>
-          <div className="flex items-center gap-2">
-            <button onClick={onClose} className="px-3 py-1.5 text-xs text-text-secondary hover:text-text-primary">取消</button>
-            <button onClick={handleSave} className="px-3 py-1.5 text-xs rounded-lg bg-accent text-white hover:bg-accent/90">保存</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ── 词条详情表单（fieldSchema 驱动） ──────────────────────────────
-
-function EntryDetail({
-  entry, category, allEntries, nameDuplicate, onChange,
-}: {
-  entry: CodexEntry
-  category: CodexCategory
-  allEntries: CodexEntry[]
-  nameDuplicate?: boolean
-  onChange: (patch: Partial<CodexEntry>) => void
-}) {
-  const schema = useMemo(() => parseFieldSchema(category.fieldSchema), [category.fieldSchema])
-  const fields = useMemo(() => parseEntryFields(entry.fields), [entry.fields])
-  const refs = useMemo(() => parseEntryRefs(entry.refs), [entry.refs])
-
-  const setField = (key: string, value: string) => {
-    onChange({ fields: stringifyEntryFields({ ...fields, [key]: value }) })
-  }
-  const setRef = (key: string, ids: number[]) => {
-    onChange({ refs: stringifyEntryRefs({ ...refs, [key]: ids }) })
-  }
-
-  return (
-    <div className="p-4 space-y-3 max-w-2xl">
-      {/* 通用字段 */}
-      <div className="flex items-center gap-2">
-        <CInput
-          value={entry.icon || ''}
-          onChange={(e) => onChange({ icon: e.target.value })}
-          placeholder="图标"
-          className="w-14 text-center px-2 py-2 rounded-lg bg-bg-elevated border border-border text-sm"
-        />
-        <div className="flex-1">
-          <CInput
-            value={entry.name}
-            onChange={(e) => onChange({ name: e.target.value })}
-            placeholder="名称"
-            className={`w-full px-3 py-2 rounded-lg bg-bg-elevated border text-sm font-medium ${nameDuplicate ? 'border-amber-400/60' : 'border-border'}`}
-          />
-          {nameDuplicate && (
-            <p className="mt-1 text-[11px] text-amber-400">⚠ 本分类下已有同名词条，注意是否重复</p>
-          )}
-        </div>
-      </div>
-      {/* 重要度星级（1-5）—— 主要用于地点类词条;点亮的星越多越重要,再点当前星可清空 */}
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-text-muted w-12">重要度</span>
-        <div className="flex items-center gap-0.5">
-          {[1, 2, 3, 4, 5].map(n => {
-            const active = (entry.importance ?? 0) >= n
-            return (
-              <button
-                key={n}
-                type="button"
-                title={`${n} 星`}
-                onClick={() => onChange({ importance: entry.importance === n ? 0 : n })}
-                className="p-0.5 hover:scale-110 transition-transform"
-              >
-                <Star className={`w-4 h-4 ${active ? 'fill-amber-400 text-amber-400' : 'text-text-muted'}`} />
-              </button>
-            )
-          })}
-        </div>
-        {(entry.importance ?? 0) > 0 && (
-          <span className="text-[11px] text-amber-400/80">{entry.importance} 星</span>
-        )}
-      </div>
-      <CInput
-        value={entry.summary}
-        onChange={(e) => onChange({ summary: e.target.value })}
-        placeholder="一句话简介"
-        className="w-full px-3 py-2 rounded-lg bg-bg-elevated border border-border text-sm"
-      />
-      <CTextarea
-        value={entry.description}
-        onChange={(e) => onChange({ description: e.target.value })}
-        placeholder="详细描述"
-        rows={3}
-        className="w-full px-3 py-2 rounded-lg bg-bg-elevated border border-border text-sm resize-y"
-      />
-
-      {schema.length > 0 && <div className="border-t border-border pt-3 text-xs text-text-muted">专属属性</div>}
-
-      {/* 专属字段 */}
-      {schema.map(def => (
-        <FieldRow
-          key={def.key}
-          def={def}
-          value={fields[def.key] || ''}
-          refIds={refs[def.key] || []}
-          allEntries={allEntries}
-          currentEntryId={entry.id!}
-          onValue={(v) => setField(def.key, v)}
-          onRef={(ids) => setRef(def.key, ids)}
-        />
-      ))}
-    </div>
-  )
-}
-
-function FieldRow({
-  def, value, refIds, allEntries, currentEntryId, onValue, onRef,
-}: {
-  def: CodexFieldDef
-  value: string
-  refIds: number[]
-  allEntries: CodexEntry[]
-  currentEntryId: number
-  onValue: (v: string) => void
-  onRef: (ids: number[]) => void
-}) {
-  return (
-    <div className="grid grid-cols-[5rem_1fr] gap-2 items-start">
-      <label className="text-xs text-text-muted pt-2 text-right">{def.label}</label>
-      <div className="min-w-0">
-        {def.type === 'longtext' && (
-          <CTextarea
-            value={value} onChange={(e) => onValue(e.target.value)}
-            placeholder={def.placeholder} rows={2}
-            className="w-full px-3 py-1.5 rounded-lg bg-bg-elevated border border-border text-sm resize-y"
-          />
-        )}
-        {def.type === 'select' && (
-          <select
-            value={value} onChange={(e) => onValue(e.target.value)}
-            className="w-full px-3 py-1.5 rounded-lg bg-bg-elevated border border-border text-sm"
-          >
-            <option value="">（未选择）</option>
-            {(def.options || []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
-          </select>
-        )}
-        {def.type === 'number' && (
-          <CInput
-            value={value} onChange={(e) => onValue(e.target.value)}
-            placeholder={def.placeholder}
-            className="w-full px-3 py-1.5 rounded-lg bg-bg-elevated border border-border text-sm"
-          />
-        )}
-        {def.type === 'ref' && (
-          <RefSelector
-            refCategory={def.refCategory}
-            multi={def.refMulti !== false}
-            value={refIds}
-            allEntries={allEntries}
-            currentEntryId={currentEntryId}
-            onChange={onRef}
-          />
-        )}
-        {def.type === 'text' && (
-          <CInput
-            value={value} onChange={(e) => onValue(e.target.value)}
-            placeholder={def.placeholder}
-            className="w-full px-3 py-1.5 rounded-lg bg-bg-elevated border border-border text-sm"
-          />
-        )}
-      </div>
-    </div>
-  )
-}
-
-function RefSelector({
-  refCategory, multi, value, allEntries, currentEntryId, onChange,
-}: {
-  refCategory?: string
-  multi: boolean
-  value: number[]
-  allEntries: CodexEntry[]
-  currentEntryId: number
-  onChange: (ids: number[]) => void
-}) {
-  const { categories } = useCodexStore()
-  const [open, setOpen] = useState(false)
-
-  // 候选词条：优先建议 refCategory 对应的内置类，否则全项目（排除自己）
-  const candidates = useMemo(() => {
-    const hintCatIds = refCategory
-      ? categories.filter(c => c.builtInKey === refCategory).map(c => c.id)
-      : []
-    return allEntries
-      .filter(e => e.id !== currentEntryId)
-      .filter(e => hintCatIds.length === 0 ? true : hintCatIds.includes(e.categoryId))
-      .sort((a, b) => a.name.localeCompare(b.name))
-  }, [allEntries, categories, refCategory, currentEntryId])
-
-  const selected = allEntries.filter(e => value.includes(e.id!))
-
-  const toggle = (id: number) => {
-    if (multi) {
-      onChange(value.includes(id) ? value.filter(v => v !== id) : [...value, id])
-    } else {
-      onChange(value.includes(id) ? [] : [id])
-      setOpen(false)
-    }
-  }
-
-  return (
-    <div className="rounded-lg bg-bg-elevated border border-border">
-      <button
-        onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center gap-1.5 px-3 py-1.5 text-sm text-left"
-      >
-        <ChevronRight className={`w-3.5 h-3.5 text-text-muted transition ${open ? 'rotate-90' : ''}`} />
-        {selected.length > 0
-          ? <span className="flex flex-wrap gap-1">
-              {selected.map(e => (
-                <span key={e.id} className="px-1.5 py-0.5 rounded bg-accent/10 text-accent text-xs">
-                  {e.icon} {e.name}
-                </span>
-              ))}
-            </span>
-          : <span className="text-text-muted">点击关联词条…</span>}
-      </button>
-      {open && (
-        <div className="border-t border-border max-h-48 overflow-y-auto p-1">
-          {candidates.length === 0 && (
-            <p className="text-xs text-text-muted px-2 py-2">暂无可关联的词条</p>
-          )}
-          {candidates.map(e => (
-            <label
-              key={e.id}
-              className="flex items-center gap-2 px-2 py-1 rounded hover:bg-bg-hover cursor-pointer text-sm"
-            >
-              <input
-                type="checkbox"
-                checked={value.includes(e.id!)}
-                onChange={() => toggle(e.id!)}
-              />
-              <span>{e.icon}</span>
-              <span className="truncate">{e.name}</span>
+            <textarea value={extractText} onChange={e => setExtractText(e.target.value)} rows={8}
+              placeholder="粘贴或编辑要拆分的整段设定内容"
+              className="w-full p-3 bg-bg-base border border-border rounded-lg text-sm text-text-primary resize-y" />
+            <label className="flex items-start gap-2 text-xs text-text-secondary">
+              <input type="checkbox" checked={supplementTags} onChange={e => setSupplementTags(e.target.checked)} className="mt-0.5 accent-accent" />
+              <span>AI 补充词条标签 <span className="text-amber-400">⚠ 会增加少量 token 消耗</span></span>
             </label>
-          ))}
+            <button onClick={handleExtractEntries} disabled={extracting || !extractText.trim()}
+              className="px-3 py-1.5 bg-accent text-white rounded-lg text-sm disabled:opacity-40 inline-flex items-center gap-1.5">
+              {extracting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              {extracting ? 'AI 拆分中…' : '开始拆分'}
+            </button>
+            {candidates.length > 0 && (
+              <div className="space-y-2 border-t border-border pt-3">
+                {candidates.map((item, index) => (
+                  <label key={`${item.name}-${index}`} className="flex gap-3 p-3 border border-border rounded-lg bg-bg-base">
+                    <input type="checkbox" checked={selectedCandidates.has(index)} onChange={() => {
+                      setSelectedCandidates(prev => {
+                        const next = new Set(prev)
+                        if (next.has(index)) next.delete(index); else next.add(index)
+                        return next
+                      })
+                    }} className="mt-1 accent-accent" />
+                    <div className="min-w-0">
+                      <div className="font-medium text-sm text-text-primary">{item.name}</div>
+                      <div className="text-xs text-text-muted">{item.summary}</div>
+                      {item.tags.length > 0 && <div className="mt-1 text-[10px] text-accent">{item.tags.map(t => `#${t}`).join(' ')}</div>}
+                    </div>
+                  </label>
+                ))}
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => setExtractOpen(false)} className="px-3 py-1.5 text-xs text-text-muted">取消</button>
+                  <button onClick={handleAdoptCandidates} disabled={!selectedCandidates.size}
+                    className="px-3 py-1.5 text-xs bg-accent text-white rounded disabled:opacity-40">
+                    写入所选 {selectedCandidates.size} 项
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

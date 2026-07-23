@@ -1,7 +1,8 @@
 {
   "name": "storyforge",
   "private": true,
-  "version": "0.1.0",
+  "version": "3.8.0",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,14 +11,22 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
     "check:required-tables": "node scripts/check-required-tables.mjs",
+    "check:source-reachability": "node scripts/check-source-reachability.mjs",
+    "check:bundle-size": "node scripts/check-bundle-size.mjs",
+    "check:release-metadata": "node scripts/check-release-metadata.mjs",
     "gen:ai-manual": "node scripts/generate-ai-manual.mjs",
     "check:ai-manual": "node scripts/generate-ai-manual.mjs --check",
     "check:architecture": "node scripts/check-architecture.mjs",
-    "ci": "npm run check:required-tables && npm run check:ai-manual && npm run check:architecture && npx tsc --noEmit && npm test && npm run build"
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix",
+    "ci": "npm run check:required-tables && npm run check:ai-manual && npm run check:architecture && npm run check:source-reachability && npm run lint && npx tsc --noEmit && npm run test:coverage && npm run build && npm run check:bundle-size",
+    "ci:e2e": "npm run test:e2e"
   },
   "dependencies": {
     "@tiptap/extension-placeholder": "^3.22.3",
+    "@tiptap/extension-text-style": "3.22.3",
     "@tiptap/pm": "^3.22.3",
     "@tiptap/react": "^3.22.3",
     "@tiptap/starter-kit": "^3.22.3",
@@ -37,16 +46,21 @@
     "zustand": "^5.0.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "@vitest/coverage-v8": "^2.1.9",
     "autoprefixer": "^10.4.20",
+    "eslint": "^9.39.4",
+    "eslint-plugin-import": "^2.32.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "fake-indexeddb": "^6.2.5",
     "happy-dom": "^20.10.2",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.6.0",
+    "typescript-eslint": "^8.61.1",
     "vite": "^6.0.0",
     "vite-plugin-pwa": "^1.2.0",
     "vitest": "^2.1.9"

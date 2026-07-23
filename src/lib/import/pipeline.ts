@@ -20,11 +20,13 @@
 import { renderPrompt } from '../ai/prompt-engine'
 import { usePromptStore } from '../../stores/prompt'
 import { useAIConfigStore } from '../../stores/ai-config'
+import { getAIConfigRequiredMessage, isAIConfigReady } from '../ai/config-readiness'
 import { useImportSessionStore } from '../../stores/import-session'
 import { useImportStatusStore } from '../../stores/import-status'
 import { extractJSON, IMPORT_MAX_TOKENS } from '../ai/adapters/import-adapter'
 import type { UnifiedParseResult } from '../types'
 import type { AIConfig } from '../types'
+import { resolveRequestConfig } from '../ai/client'
 import type { ImportSession, ChunkState } from '../types'
 import {
   registerChunkTexts as _registerChunkTexts,
@@ -37,6 +39,11 @@ import {
 } from './unified-merge'
 import { applyChunkResult, type ApplyChunkCounts } from './chunk-writer'
 import { useReferenceStore } from '../../stores/reference'
+import {
+  writeShallowAnalysisFromTechniques,
+  registerRefChunks,
+  runRefAnalysis,
+} from '../reference-analysis/pipeline'
 import { chatWithAbort } from './chat-with-abort'
 import { runCharacterMerge } from './character-merge'
 
@@ -160,26 +167,10 @@ export async function runSession(args: {
 
     const report = buildFinalReport(fresh)
 
-    // 项目参考模式：把累积的 merged 数据写入 references 表
+    // 项目参考模式：写入 references 表 + 按档位跑 13 维统一分析（浅层免费 / 深层逐块）
     if (fresh.importTarget === 'reference' && doneCount > 0) {
       try {
-        await useReferenceStore.getState().addReference({
-          projectId,
-          title: fresh.filename.replace(/\.[^.]+$/, ''),
-          author: '',
-          type: 'story',
-          note: `从「${fresh.filename}」导入 · ${fresh.totalChars.toLocaleString()} 字`,
-          url: '',
-          importedData: {
-            worldview: fresh.merged?.worldview,
-            characters: fresh.merged?.characters,
-            outline: fresh.merged?.outline,
-            writingTechniques: fresh.merged?.writingTechniques,
-            sourceFilename: fresh.filename,
-            importedAt: Date.now(),
-          },
-        })
-        statusStore.pushActivity('success', '📚 已保存到「项目参考」')
+        await applyReferenceFromSession(projectId, fresh, sessionId, statusStore)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         statusStore.pushActivity('error', `保存项目参考失败：${msg}`)
@@ -261,6 +252,7 @@ async function runChunk(
 
     try {
       const result = await parseChunkOnce({
+        projectId,
         chunkIndex,
         totalChunks: session.totalChunks,
         knownContext: session.rollingContext || '（尚无已识别上下文）',
@@ -337,6 +329,7 @@ async function runChunk(
 
 /** 调一次 AI 解析一个 chunk */
 async function parseChunkOnce(args: {
+  projectId: number
   chunkIndex: number
   totalChunks: number
   knownContext: string
@@ -353,9 +346,15 @@ async function parseChunkOnce(args: {
   const baseConfig = useAIConfigStore.getState().config
   const overrideMax = Math.max(baseConfig.maxTokens ?? 4096, IMPORT_MAX_TOKENS.all)
   const config: AIConfig = { ...baseConfig, maxTokens: overrideMax }
-  if (!config.apiKey) throw new Error('未配置 AI API Key')
+  const meta = {
+    category: 'import.parse-chunk',
+    projectId: args.projectId,
+    configOverrides: { maxTokens: overrideMax },
+  } as const
+  const effectiveConfig = resolveRequestConfig(config, meta).config
+  if (!isAIConfigReady(effectiveConfig)) throw new Error(getAIConfigRequiredMessage(effectiveConfig))
 
-  const output = await chatWithAbort(messages, config, args.signal)
+  const output = await chatWithAbort(messages, config, args.signal, meta)
   const obj = extractJSON(output) as UnifiedParseResult
   return normalizeUnified(obj)
 }
@@ -363,6 +362,87 @@ async function parseChunkOnce(args: {
 function sleep(ms: number) {
   return new Promise(r => setTimeout(r, ms))
 }
+
+/**
+ * 从一份(已解析完成的) session 落地到「项目参考」+ 跑 13 维统一分析。
+ * 解析与落地解耦:导入流程完成解析后调它;"解析一次多次落地"复用路径也调它(零重复解析)。
+ * - 浅层:用 merged.writingTechniques 免费落成全书分析行(不调 AI)。
+ * - 深层:用 session 的块文本逐块深析(registerRefChunks + runRefAnalysis)。
+ */
+export async function applyReferenceFromSession(
+  projectId: number,
+  session: ImportSession,
+  sessionId: number,
+  statusStore?: { pushActivity: (level: 'info' | 'success' | 'warn' | 'error', msg: string) => void },
+  depthOverride?: import('../types').ReferenceAnalysisDepth,
+): Promise<number> {
+  const depth = depthOverride ?? session.analysisDepth ?? 'quick'
+  const refId = await useReferenceStore.getState().addReference({
+    projectId,
+    title: session.filename.replace(/\.[^.]+$/, ''),
+    author: '',
+    type: 'story',
+    note: `从「${session.filename}」导入 · ${session.totalChars.toLocaleString()} 字`,
+    url: '',
+    fileHash: session.fileHash,
+    importSessionId: sessionId,
+    analysisDepth: depth,
+    importedData: {
+      worldview: session.merged?.worldview,
+      characters: session.merged?.characters,
+      outline: session.merged?.outline,
+      writingTechniques: session.merged?.writingTechniques,
+      sourceFilename: session.filename,
+      importedAt: Date.now(),
+    },
+  })
+  statusStore?.pushActivity('success', '📚 已保存到「项目参考」')
+
+  if (depth === 'deep') {
+    // 深层:复用 session 已切的块(文本在 chunk-text-registry)逐块深析
+    const chunkPlans: ChunkPlanLite[] = session.chunks.map(c => ({
+      index: c.index,
+      startChar: c.startChar,
+      endChar: c.endChar,
+      charCount: c.charCount,
+      label: c.label,
+      text: getChunkText(sessionId, c.index) ?? '',
+    })).filter(c => c.text)
+    if (chunkPlans.length > 0) {
+      registerRefChunks(refId, chunkPlans)
+      statusStore?.pushActivity('info', `🔬 开始深层分析（${chunkPlans.length} 块）…`)
+      await runRefAnalysis(refId)
+    } else {
+      // 块文本丢了(刷新过) → 退回浅层,免得卡住
+      await writeShallowAnalysisFromTechniques(refId, session.merged?.writingTechniques)
+      statusStore?.pushActivity('warn', '块文本不可用,已退回浅层分析')
+    }
+  } else {
+    // 浅层:免费,用解析已出的写作技法
+    await writeShallowAnalysisFromTechniques(refId, session.merged?.writingTechniques)
+    statusStore?.pushActivity('success', '✓ 浅层作品分析已完成')
+  }
+  return refId
+}
+
+/**
+ * 从一份(已解析完成的) session 落地到「当前项目设定库」(世界观/角色/大纲),零重复解析。
+ * "解析一次·多次落地"的另一半:用户已解析过对标文(或导入过参考),想把设定搬进设定库时,
+ * 直接复用 session.merged 写库,**不再调用解析 AI**(省钱),也不必一个个手填。
+ */
+export async function applyProjectFromSession(
+  projectId: number,
+  session: ImportSession,
+  worldGroupId: number | null = null,
+  statusStore?: { pushActivity: (level: 'info' | 'success' | 'warn' | 'error', msg: string) => void },
+): Promise<ApplyChunkCounts> {
+  const merged = (session.merged ?? {}) as UnifiedParseResult
+  const counts = await applyChunkResult(projectId, merged, worldGroupId ?? session.targetWorldGroupId ?? null)
+  statusStore?.pushActivity('success', `📥 已灌入设定库：世界观 +${counts.worldviewFields} 字段 · 角色 +${counts.characters} · 大纲 +${counts.outlineNodes}`)
+  return counts
+}
+
+type ChunkPlanLite = { index: number; startChar: number; endChar: number; charCount: number; label?: string; text: string }
 
 /** 单独重试某个失败的块（用户在 ReportModal 里点的"重试失败块"） */
 export async function retryFailedChunks(args: {

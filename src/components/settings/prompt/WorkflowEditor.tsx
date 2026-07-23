@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Save, Plus, X, Trash2 } from 'lucide-react'
 import { useWorkflowStore } from '../../../stores/workflow'
+import { usePromptStore } from '../../../stores/prompt'
 import type { PromptWorkflow, PromptWorkflowStep } from '../../../lib/types/workflow'
 import {
   ALL_MODULE_KEYS_FOR_WORKFLOW,
@@ -8,6 +9,8 @@ import {
   saveTargetToValue,
   valueToSaveTarget,
 } from './workflow-helpers'
+import { useDialog } from '../../shared/Dialog'
+import { useToast } from '../../shared/Toast'
 
 /**
  * 工作流编辑器：编辑一个 PromptWorkflow 的元信息与步骤列表。
@@ -20,8 +23,11 @@ export default function WorkflowEditor({
   workflow: PromptWorkflow
   onClose: () => void
 }) {
+  const dialog = useDialog()
+  const toast = useToast()
   const saveWorkflow = useWorkflowStore(s => s.save)
   const removeWorkflow = useWorkflowStore(s => s.remove)
+  const templates = usePromptStore(s => s.templates)
   const [draft, setDraft] = useState<PromptWorkflow>(workflow)
   const [dirty, setDirty] = useState(false)
 
@@ -70,7 +76,33 @@ export default function WorkflowEditor({
   const handleSave = async () => {
     await saveWorkflow(draft)
     setDirty(false)
-    alert('已保存')
+    toast.success('已保存')
+  }
+
+  const handleClose = async () => {
+    if (dirty) {
+      const ok = await dialog.confirm({
+        title: '放弃未保存的更改？',
+        message: '当前工作流编辑内容尚未保存，返回后会丢失。',
+        confirmText: '放弃并返回',
+        tone: 'danger',
+      })
+      if (!ok) return
+    }
+    onClose()
+  }
+
+  const handleDelete = async () => {
+    if (!draft.id) return
+    const ok = await dialog.confirm({
+      title: `删除工作流「${draft.name}」？`,
+      message: '此操作不可恢复。',
+      confirmText: '删除',
+      tone: 'danger',
+    })
+    if (!ok) return
+    removeWorkflow(draft.id)
+    onClose()
   }
 
   return (
@@ -87,10 +119,7 @@ export default function WorkflowEditor({
             <Save className="w-4 h-4" /> 保存{dirty && ' *'}
           </button>
           <button
-            onClick={() => {
-              if (dirty && !confirm('未保存的更改将丢失，确认返回？')) return
-              onClose()
-            }}
+            onClick={() => { void handleClose() }}
             className="px-3 py-1.5 text-text-secondary text-sm rounded hover:bg-bg-hover"
           >
             返回
@@ -186,6 +215,35 @@ export default function WorkflowEditor({
                     className="w-full px-2 py-1 bg-bg-surface border border-border rounded text-xs text-text-primary resize-none focus:outline-none focus:border-accent"
                   />
                 </div>
+                {(() => {
+                  const template = s.templateId != null
+                    ? templates.find(t => t.id === s.templateId)
+                    : templates.find(t => t.moduleKey === s.promptModuleKey && t.isActive)
+                      ?? templates.find(t => t.moduleKey === s.promptModuleKey)
+                  const bindings = template?.variableBindings ?? []
+                  if (!bindings.length) return null
+                  return (
+                    <div className="border-t border-border pt-2 space-y-2">
+                      <p className="text-[10px] text-text-muted">模板字段：自动读取已登记项目资料；可在此补充或修正</p>
+                      {bindings.map(binding => (
+                        <div key={binding.variable}>
+                          <label className="block text-[10px] text-text-muted mb-0.5">
+                            {binding.label}{binding.required ? ' *' : ''}
+                          </label>
+                          <textarea
+                            value={s.inputValues?.[binding.variable] || ''}
+                            onChange={e => updateStep(idx, {
+                              inputValues: { ...(s.inputValues || {}), [binding.variable]: e.target.value },
+                            })}
+                            rows={2}
+                            placeholder={binding.placeholder || '可留空，使用项目自动资料'}
+                            className="w-full px-2 py-1 bg-bg-surface border border-border rounded text-xs text-text-primary resize-y focus:outline-none focus:border-accent"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )
+                })()}
                 <div className="flex items-center gap-3 text-xs">
                   <label className="flex items-center gap-1 text-text-secondary">
                     <input
@@ -227,12 +285,7 @@ export default function WorkflowEditor({
       {/* 底部删除（仅用户工作流） */}
       {draft.scope === 'user' && draft.id && (
         <button
-          onClick={() => {
-            if (confirm(`删除工作流「${draft.name}」？此操作不可恢复。`)) {
-              removeWorkflow(draft.id!)
-              onClose()
-            }
-          }}
+          onClick={() => { void handleDelete() }}
           className="flex items-center gap-1.5 px-3 py-1.5 text-error text-xs hover:bg-error/10 rounded"
         >
           <Trash2 className="w-3 h-3" /> 删除工作流

@@ -5,7 +5,7 @@ import {
   Ruler, BookOpen, FilePen, Eye,
   FileCog, History, Upload, Download, Settings,
   Map, ClipboardList, GitBranch, Clock, MapPin, Scale,
-  Drama, Package, CalendarClock, ScanSearch, Coins, Feather,
+  Drama, Package, CalendarClock, ScanSearch, Coins, Feather, Database,
 } from 'lucide-react'
 
 /**
@@ -25,7 +25,8 @@ export type SidebarModule =
   | 'worldview-natural'     // 占位 (P5)
   | 'worldview-humanity'    // 占位 (P6)
   | 'story-design'          // = 旧 story-core
-  | 'characters'            // 主要角色（暂用 CharacterPanel 全量）
+  | 'characters'            // 角色生成
+  | 'characters-main'       // 主要角色
   | 'characters-minor'      // 占位 (P7)
   | 'characters-npc'        // 占位 (P7)
   | 'characters-extra'      // 占位 (P7)
@@ -65,6 +66,9 @@ export type SidebarModule =
   // 物品栏（Phase 25.5.2-b）
   | 'inventory'
 
+  // 事实库（NS-4 时序事实账本）
+  | 'fact-library'
+
   // 故事进程年表（Phase 25.5.2-a）
   | 'story-timeline'
 
@@ -80,6 +84,91 @@ export type SidebarModule =
   | 'power-system'
   | 'story-core' | 'backup'
 
+export type ModuleContentType = 'upstream' | 'writing' | 'downstream' | 'tool' | 'system'
+
+export interface ModuleContentTypeDefinition {
+  label: string
+  description: string
+}
+
+export const MODULE_CONTENT_TYPE_DEFINITIONS: Record<ModuleContentType, ModuleContentTypeDefinition> = {
+  upstream: {
+    label: '设定',
+    description: '你填写或规划的内容，会作为 AI 创作的上游依据。',
+  },
+  writing: {
+    label: '创作',
+    description: '小说正文的实际写作与编辑区域。',
+  },
+  downstream: {
+    label: '产物',
+    description: '从已写正文提取或整理的内容，可由作者校正。',
+  },
+  tool: {
+    label: 'AI 工具',
+    description: '用于生成、反推、分析或考证的辅助工具。',
+  },
+  system: {
+    label: '系统',
+    description: '项目导入、导出、版本、提示词与应用配置。',
+  },
+}
+
+/**
+ * Phase 36 的模块内容类型单一事实源。
+ * legacy 路由也必须显式登记，避免从旧入口进入时丢失标记。
+ */
+export const MODULE_CONTENT_TYPES: Record<SidebarModule, ModuleContentType> = {
+  info: 'upstream',
+  references: 'upstream',
+  inspiration: 'tool',
+  'world-overview': 'upstream',
+  'world-rules': 'upstream',
+  'worldview-origin': 'upstream',
+  'worldview-natural': 'upstream',
+  'worldview-humanity': 'upstream',
+  'story-design': 'upstream',
+  characters: 'upstream',
+  'characters-main': 'upstream',
+  'characters-minor': 'upstream',
+  'characters-npc': 'upstream',
+  'characters-extra': 'upstream',
+  relations: 'upstream',
+  geography: 'upstream',
+  locations: 'upstream',
+  history: 'upstream',
+  rules: 'upstream',
+  outline: 'upstream',
+  'character-driven-plot': 'tool',
+  'detailed-outline': 'upstream',
+  'chapters-list': 'writing',
+  editor: 'writing',
+  foreshadow: 'upstream',
+  'style-learning': 'tool',
+  'master-studies': 'tool',
+  prompts: 'system',
+  'version-history': 'system',
+  'import-doc': 'system',
+  export: 'system',
+  'usage-stats': 'system',
+  settings: 'system',
+  'data-management': 'system',
+  'state-table': 'downstream',
+  inventory: 'downstream',
+  'fact-library': 'downstream',
+  'story-timeline': 'downstream',
+  'scene-verify': 'tool',
+  'story-arc': 'upstream',
+  'world-map': 'upstream',
+  'power-system': 'upstream',
+  'story-core': 'upstream',
+  backup: 'system',
+}
+
+export function getModuleContentType(module: SidebarModule): ModuleContentType {
+  return MODULE_CONTENT_TYPES[module]
+}
+
 // ── 树节点 ────────────────────────────────────────────────────────────
 
 export interface TreeLeaf {
@@ -87,6 +176,7 @@ export interface TreeLeaf {
   id: SidebarModule
   label: string
   icon: ComponentType<{ className?: string }>
+  contentType: ModuleContentType
 }
 
 export interface TreeBranch {
@@ -114,7 +204,7 @@ export interface TreeSection {
 // ── 数据 ─────────────────────────────────────────────────────────────
 
 const leaf = (id: SidebarModule, label: string, icon: ComponentType<{ className?: string }>): TreeLeaf =>
-  ({ kind: 'leaf', id, label, icon })
+  ({ kind: 'leaf', id, label, icon, contentType: getModuleContentType(id) })
 
 export const NAV_TREE: TreeSection[] = [
   {
@@ -152,7 +242,8 @@ export const NAV_TREE: TreeSection[] = [
         label: '角色设计',
         icon: UsersRound,
         children: [
-          leaf('characters',         '主要角色', UserCircle),
+          leaf('characters',         '角色生成', UserCircle),
+          leaf('characters-main',    '主要角色', UserCircle),
           leaf('characters-minor',   '次要角色', User),
           leaf('characters-npc',     'NPC',      UsersRound),
           leaf('characters-extra',   '路人',     Footprints),
@@ -175,6 +266,7 @@ export const NAV_TREE: TreeSection[] = [
       leaf('locations',        '重要地点', MapPin),
       leaf('state-table',      '状态表',   ClipboardList),
       leaf('inventory',        '物品栏',   Package),
+      leaf('fact-library',     '事实库',   Database),
       leaf('story-timeline',   '故事年表', CalendarClock),
       leaf('scene-verify',     '场景考证', ScanSearch),
     ],
@@ -191,8 +283,8 @@ export const NAV_TREE: TreeSection[] = [
     label: '设置区',
     children: [
       leaf('version-history',  '版本历史', History),
-      leaf('import-doc',       '导入',     Upload),
-      leaf('export',           '导出',     Download),
+      leaf('import-doc',       '文档解析', Upload),
+      leaf('export',           '数据管理', Download),
       leaf('usage-stats',      '消耗统计', Coins),
       leaf('settings',         '设置',     Settings),
     ],

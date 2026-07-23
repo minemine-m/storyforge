@@ -6,38 +6,35 @@
 
 import { useState, useEffect, useRef } from 'react'
 import {
-  Lightbulb, Sparkles, Loader2, Check, ChevronDown, ChevronRight,
-  Globe, BookOpen, UserCircle, ArrowDownToLine, Download,
+  Lightbulb, Sparkles, Loader2, Download,
 } from 'lucide-react'
 import { useWorldGroupStore } from '../../stores/world-group'
 import { useAIStream } from '../../hooks/useAIStream'
+import { createAISessionKey } from '../../stores/ai-generation-session'
 import {
   buildInspirationReversePrompt,
   parseReverseOutput,
   buildInspirationReverseMultiWorldPrompt,
   parseReverseMultiWorldOutput,
   type ReverseResult,
-  type ReverseCharacter,
   type ReverseMultiWorldResult,
 } from '../../lib/ai/inspiration-reverse'
 import { adopt } from '../../lib/registry/adopt'
+import { CHARACTER_DIMENSIONS } from '../../lib/character/character-dimensions'
 import AIStreamOutput from '../shared/AIStreamOutput'
 import AutoResizeTextarea from '../shared/AutoResizeTextarea'
 import type { Project } from '../../lib/types'
+import { characterAxesLabel } from '../../lib/character/character-axes'
+import InspirationMultiWorldResult from './InspirationMultiWorldResult'
+import InspirationSingleResult from './InspirationSingleResult'
 
 interface Props {
   project: Project
 }
 
-const ROLE_LABELS: Record<string, string> = {
-  protagonist: '主角',
-  antagonist: '反派',
-  supporting: '配角',
-}
-
 export default function InspirationPanel({ project }: Props) {
   const wgStore = useWorldGroupStore()
-  const ai = useAIStream()
+  const ai = useAIStream(createAISessionKey(project.id!, 'inspiration.reverse'))
   const isMW = !!project.enableMultiWorld
 
   const draftKey = `sf-inspiration-draft-${project.id}`
@@ -107,7 +104,7 @@ export default function InspirationPanel({ project }: Props) {
     const messages = isMW
       ? buildInspirationReverseMultiWorldPrompt(project.name, genres, inspiration, userHint || undefined)
       : buildInspirationReversePrompt(project.name, genres, inspiration, userHint || undefined)
-    await ai.start(messages)
+    await ai.start(messages, undefined, { category: 'inspiration.reverse', projectId: project.id! })
   }
 
   // ── 多世界：一键采纳（创建世界组 + 各世界世界观 + 故事核心 + 角色归属）──
@@ -188,16 +185,17 @@ export default function InspirationPanel({ project }: Props) {
           mode: 'add',
           data: {
             name: c.name,
-            role: c.role || 'supporting',
-            shortDescription: c.shortDescription || '',
-            appearance: '',
-            personality: c.personality || '',
-            background: c.background || '',
-            motivation: c.motivation || '',
-            abilities: '',
-            relationships: '',
-            arc: c.arc || '',
+            roleWeight: c.roleWeight,
+            moralAxis: c.moralAxis,
+            orderAxis: c.orderAxis,
             isCrossWorld: c.isCrossWorld,
+            // 维度字段从 CHARACTER_DIMENSIONS 单源派生：解析对象带什么就写什么，
+            // 不硬编码字段表(空值由 adopt 跳过；缺的维度用户可后续 C1 补全)。
+            ...Object.fromEntries(
+              CHARACTER_DIMENSIONS
+                .map(d => [d.key, (c as unknown as Record<string, unknown>)[d.key]])
+                .filter(([, v]) => typeof v === 'string' && v),
+            ),
           },
         })
       }
@@ -237,7 +235,7 @@ export default function InspirationPanel({ project }: Props) {
         lines.push(`## 初始角色`)
         mwResult.characters.forEach(c => {
           const home = c.isCrossWorld ? '跨世界' : (c.homeWorld || '')
-          lines.push(`- **${c.name}**（${ROLE_LABELS[c.role] || c.role}${home ? ` · ${home}` : ''}）：${c.shortDescription}`)
+          lines.push(`- **${c.name}**（${characterAxesLabel(c)}${home ? ` · ${home}` : ''}）：${c.shortDescription}`)
         })
       }
     } else if (result) {
@@ -255,7 +253,7 @@ export default function InspirationPanel({ project }: Props) {
       if (sc.mainPlot) lines.push(`- 主线：${sc.mainPlot}`)
       if (result.characters.length) {
         lines.push(`\n## 初始角色`)
-        result.characters.forEach(c => lines.push(`- **${c.name}**（${ROLE_LABELS[c.role] || c.role}）：${c.shortDescription}`))
+        result.characters.forEach(c => lines.push(`- **${c.name}**（${characterAxesLabel(c)}）：${c.shortDescription}`))
       }
     }
     const blob = new Blob([lines.join('\n')], { type: 'text/markdown' })
@@ -270,7 +268,8 @@ export default function InspirationPanel({ project }: Props) {
   const toggleSection = (key: string) => {
     setExpandedSections(prev => {
       const next = new Set(prev)
-      next.has(key) ? next.delete(key) : next.add(key)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
       return next
     })
   }
@@ -278,7 +277,8 @@ export default function InspirationPanel({ project }: Props) {
   const toggleChar = (idx: number) => {
     setSelectedChars(prev => {
       const next = new Set(prev)
-      next.has(idx) ? next.delete(idx) : next.add(idx)
+      if (next.has(idx)) next.delete(idx)
+      else next.add(idx)
       return next
     })
   }
@@ -340,15 +340,15 @@ export default function InspirationPanel({ project }: Props) {
         mode: 'add',
         data: {
           name: c.name,
-          role: c.role || 'supporting',
-          shortDescription: c.shortDescription || '',
-          appearance: '',
-          personality: c.personality || '',
-          background: c.background || '',
-          motivation: c.motivation || '',
-          abilities: '',
-          relationships: '',
-          arc: c.arc || '',
+          roleWeight: c.roleWeight,
+          moralAxis: c.moralAxis,
+          orderAxis: c.orderAxis,
+          // 维度字段从 CHARACTER_DIMENSIONS 单源派生（同上：不硬编码字段表）
+          ...Object.fromEntries(
+            CHARACTER_DIMENSIONS
+              .map(d => [d.key, (c as unknown as Record<string, unknown>)[d.key]])
+              .filter(([, v]) => typeof v === 'string' && v),
+          ),
         },
       })
     }
@@ -366,12 +366,10 @@ export default function InspirationPanel({ project }: Props) {
     setAdopting(false)
   }
 
-  const allAdopted = adoptedSections.has('worldview') && adoptedSections.has('storyCore') && adoptedSections.has('characters')
-
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* 顶部标题 */}
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-border-default bg-bg-surface">
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-border bg-bg-surface">
         <Lightbulb className="w-5 h-5 text-yellow-500" />
         <h2 className="text-lg font-semibold text-text-primary">灵感反推</h2>
         <span className="text-xs text-text-muted ml-2">从碎片想法反推完整故事框架</span>
@@ -388,16 +386,26 @@ export default function InspirationPanel({ project }: Props) {
       <div className="flex-1 overflow-y-auto p-4 space-y-5">
         {/* ── 灵感输入 ────────────────────────────── */}
         <section>
-          <label className="block text-sm font-medium text-text-primary mb-2">
+          <label className="block text-sm font-medium text-text-primary mb-1">
             写下你的灵感
           </label>
+          {/* CF-5: 明确适用边界，避免用户误把长篇正文粘进来 */}
+          <p className="text-xs text-text-muted mb-2">
+            适合<strong>短灵感 / 梗概 / 片段想法</strong>（几句到一两段）。要从<strong>整章 / 整本正文</strong>提取设定，请用「文档解析 / 项目参考导入」，效果更完整。
+          </p>
           <AutoResizeTextarea
             value={inspiration}
             onChange={e => setInspiration(e.target.value)}
             placeholder={"随便写点什么...\n\n例如：\n- 一个在末世废墟中寻找失踪妹妹的退役军人\n- 古代宫廷里，一个替身公主发现了皇帝的秘密\n- 赛博朋克 + 修仙，用代码修炼的程序员\n- 甚至只是几个关键词：深海、孤岛、失忆、怪物"}
-            className="w-full text-sm bg-bg-base border border-border-default rounded-lg px-4 py-3 text-text-primary placeholder:text-text-muted resize-none"
+            className="w-full text-sm bg-bg-base border border-border rounded-lg px-4 py-3 text-text-primary placeholder:text-text-muted resize-none"
             minRows={5}
           />
+          {/* CF-5: 超长非阻断提示——不静默截断，明确告知只适合短文本 */}
+          {inspiration.length > 1500 && (
+            <p className="mt-1.5 text-xs text-warning">
+              ⚠️ 当前输入约 {inspiration.length} 字，偏长。灵感反推面向短灵感设计，过长内容 AI 可能只吃前半段；长篇正文请改用「文档解析 / 项目参考导入」。
+            </p>
+          )}
         </section>
 
         {/* ── 补充说明 ────────────────────────────── */}
@@ -407,7 +415,7 @@ export default function InspirationPanel({ project }: Props) {
             value={userHint}
             onChange={e => setUserHint(e.target.value)}
             placeholder="例如：偏黑暗风格、需要感情线、主角要有反转..."
-            className="w-full text-sm bg-bg-base border border-border-default rounded px-3 py-2 text-text-primary placeholder:text-text-muted resize-none"
+            className="w-full text-sm bg-bg-base border border-border rounded px-3 py-2 text-text-primary placeholder:text-text-muted resize-none"
             minRows={2}
           />
         </section>
@@ -417,7 +425,7 @@ export default function InspirationPanel({ project }: Props) {
           <button
             onClick={handleGenerate}
             disabled={!inspiration.trim() || ai.isStreaming}
-            className="flex items-center gap-1.5 px-4 py-2 bg-brand-primary text-white rounded-lg text-sm font-medium hover:bg-brand-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="flex items-center gap-1.5 px-4 py-2 bg-accent text-white rounded-lg text-sm font-medium hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {ai.isStreaming ? (
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -461,269 +469,30 @@ export default function InspirationPanel({ project }: Props) {
 
         {/* ── 多世界反推结果预览 ─────────────────────── */}
         {isMW && mwResult && !ai.isStreaming && (
-          <section className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium text-text-primary">多世界反推结果（{mwResult.worlds.length} 个世界）</h3>
-              <button
-                onClick={handleAdoptMultiWorld}
-                disabled={adopting || mwAdopted}
-                className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 disabled:opacity-40 transition-colors"
-              >
-                {adopting ? <Loader2 className="w-3 h-3 animate-spin" /> : mwAdopted ? <Check className="w-3 h-3" /> : <ArrowDownToLine className="w-3 h-3" />}
-                {mwAdopted ? '已采纳' : '一键创建多世界'}
-              </button>
-            </div>
-
-            {/* 故事核心 */}
-            <div className="bg-bg-surface border border-border rounded-lg p-3 space-y-1 text-sm">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-text-secondary mb-1"><BookOpen className="w-3.5 h-3.5" /> 故事主线</div>
-              {mwResult.storyCore.logline && <FieldRow label="一句话" value={mwResult.storyCore.logline} />}
-              {mwResult.storyCore.mainPlot && <FieldRow label="主线" value={mwResult.storyCore.mainPlot} />}
-              {mwResult.storyCore.centralConflict && <FieldRow label="核心冲突" value={mwResult.storyCore.centralConflict} />}
-            </div>
-
-            {/* 各世界 */}
-            {mwResult.worlds.map((w, i) => (
-              <div key={i} className="bg-bg-surface border border-border rounded-lg p-3 space-y-1 text-sm">
-                <div className="flex items-center gap-1.5 text-xs font-medium text-text-secondary mb-1">
-                  <Globe className="w-3.5 h-3.5" /> {w.name}
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-bg-elevated text-text-muted">{w.type}</span>
-                </div>
-                {w.worldOrigin && <FieldRow label="世界来源" value={w.worldOrigin} />}
-                {w.powerHierarchy && <FieldRow label="力量体系" value={w.powerHierarchy} />}
-                {w.factionLayout && <FieldRow label="势力分布" value={w.factionLayout} />}
-                {w.entryCondition && <FieldRow label="进入条件" value={w.entryCondition} />}
-                {w.powerRestriction && <FieldRow label="能力限制" value={w.powerRestriction} />}
-              </div>
-            ))}
-
-            {/* 角色 */}
-            {mwResult.characters.length > 0 && (
-              <div className="bg-bg-surface border border-border rounded-lg p-3 space-y-1.5 text-sm">
-                <div className="flex items-center gap-1.5 text-xs font-medium text-text-secondary mb-1"><UserCircle className="w-3.5 h-3.5" /> 初始角色（{mwResult.characters.length}）</div>
-                {mwResult.characters.map((c, i) => (
-                  <div key={i} className="text-xs">
-                    <span className="text-text-primary font-medium">{c.name}</span>
-                    <span className="text-text-muted"> · {ROLE_LABELS[c.role] || c.role}</span>
-                    {c.isCrossWorld ? <span className="ml-1 text-accent">🌐 跨世界</span> : c.homeWorld && <span className="ml-1 text-text-muted">@{c.homeWorld}</span>}
-                    {c.shortDescription && <span className="text-text-muted"> — {c.shortDescription}</span>}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {mwAdopted && (
-              <p className="text-xs text-green-400">✓ 已创建 {mwResult.worlds.length} 个世界。前往「世界总览」查看，或在世界观面板切换世界编辑。</p>
-            )}
-          </section>
+          <InspirationMultiWorldResult
+            result={mwResult}
+            adopted={mwAdopted}
+            adopting={adopting}
+            onAdopt={handleAdoptMultiWorld}
+          />
         )}
 
         {/* ── 结构化结果预览 ─────────────────────── */}
         {result && !ai.isStreaming && (
-          <section className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium text-text-primary">反推结果</h3>
-              {!allAdopted && (
-                <button
-                  onClick={handleAdoptAll}
-                  disabled={adopting}
-                  className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 disabled:opacity-40 transition-colors"
-                >
-                  {adopting ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowDownToLine className="w-3 h-3" />}
-                  一键全部采纳
-                </button>
-              )}
-            </div>
-
-            {/* ── 世界观卡片 ──────────────────────── */}
-            <ResultCard
-              title="世界观草稿"
-              icon={<Globe className="w-4 h-4 text-blue-500" />}
-              expanded={expandedSections.has('worldview')}
-              onToggle={() => toggleSection('worldview')}
-              adopted={adoptedSections.has('worldview')}
-              onAdopt={handleAdoptWorldview}
-              adopting={adopting}
-              adoptLabel="写入世界观"
-            >
-              <div className="space-y-2 text-sm">
-                {result.worldview.worldOrigin && (
-                  <FieldRow label="世界来源" value={result.worldview.worldOrigin} />
-                )}
-                {result.worldview.powerHierarchy && (
-                  <FieldRow label="力量体系" value={result.worldview.powerHierarchy} />
-                )}
-                {result.worldview.continentLayout && (
-                  <FieldRow label="地貌分布" value={result.worldview.continentLayout} />
-                )}
-                {result.worldview.climateByRegion && (
-                  <FieldRow label="气候环境" value={result.worldview.climateByRegion} />
-                )}
-                {result.worldview.historyLine && (
-                  <FieldRow label="世界历史" value={result.worldview.historyLine} />
-                )}
-                {result.worldview.races && (
-                  <FieldRow label="种族民族" value={result.worldview.races} />
-                )}
-                {result.worldview.factionLayout && (
-                  <FieldRow label="势力分布" value={result.worldview.factionLayout} />
-                )}
-              </div>
-            </ResultCard>
-
-            {/* ── 故事核心卡片 ────────────────────── */}
-            <ResultCard
-              title="故事核心"
-              icon={<BookOpen className="w-4 h-4 text-purple-500" />}
-              expanded={expandedSections.has('storyCore')}
-              onToggle={() => toggleSection('storyCore')}
-              adopted={adoptedSections.has('storyCore')}
-              onAdopt={handleAdoptStoryCore}
-              adopting={adopting}
-              adoptLabel="写入故事设计"
-            >
-              <div className="space-y-2 text-sm">
-                {result.storyCore.logline && (
-                  <FieldRow label="一句话故事" value={result.storyCore.logline} highlight />
-                )}
-                {result.storyCore.theme && (
-                  <FieldRow label="主题" value={result.storyCore.theme} />
-                )}
-                {result.storyCore.centralConflict && (
-                  <FieldRow label="核心冲突" value={result.storyCore.centralConflict} />
-                )}
-                {result.storyCore.plotPattern && (
-                  <FieldRow label="情节模式" value={result.storyCore.plotPattern} />
-                )}
-                {result.storyCore.mainPlot && (
-                  <FieldRow label="主线" value={result.storyCore.mainPlot} />
-                )}
-              </div>
-            </ResultCard>
-
-            {/* ── 角色卡片 ────────────────────────── */}
-            <ResultCard
-              title={`初始角色（${result.characters.length} 个）`}
-              icon={<UserCircle className="w-4 h-4 text-orange-500" />}
-              expanded={expandedSections.has('characters')}
-              onToggle={() => toggleSection('characters')}
-              adopted={adoptedSections.has('characters')}
-              onAdopt={handleAdoptCharacters}
-              adopting={adopting}
-              adoptLabel={`写入角色库（${selectedChars.size} 个）`}
-            >
-              <div className="space-y-3">
-                {result.characters.map((ch, i) => (
-                  <CharacterCard
-                    key={i}
-                    char={ch}
-                    selected={selectedChars.has(i)}
-                    onToggle={() => toggleChar(i)}
-                    adopted={adoptedSections.has('characters')}
-                  />
-                ))}
-              </div>
-            </ResultCard>
-          </section>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ── 子组件 ──────────────────────────────────────────────────────────────
-
-function ResultCard({
-  title, icon, expanded, onToggle, adopted, onAdopt, adopting, adoptLabel, children,
-}: {
-  title: string
-  icon: React.ReactNode
-  expanded: boolean
-  onToggle: () => void
-  adopted: boolean
-  onAdopt: () => void
-  adopting: boolean
-  adoptLabel: string
-  children: React.ReactNode
-}) {
-  return (
-    <div className="border border-border-default rounded-lg overflow-hidden">
-      <div
-        className="flex items-center justify-between px-4 py-2.5 bg-bg-surface cursor-pointer hover:bg-bg-hover transition-colors"
-        onClick={onToggle}
-      >
-        <div className="flex items-center gap-2">
-          {expanded ? <ChevronDown className="w-3.5 h-3.5 text-text-muted" /> : <ChevronRight className="w-3.5 h-3.5 text-text-muted" />}
-          {icon}
-          <span className="text-sm font-medium text-text-primary">{title}</span>
-        </div>
-        {adopted ? (
-          <span className="flex items-center gap-1 text-xs text-green-600">
-            <Check className="w-3.5 h-3.5" /> 已采纳
-          </span>
-        ) : (
-          <button
-            onClick={e => { e.stopPropagation(); onAdopt() }}
-            disabled={adopting}
-            className="flex items-center gap-1 px-2.5 py-1 bg-green-600 text-white rounded text-xs hover:bg-green-700 disabled:opacity-40 transition-colors"
-          >
-            {adopting ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowDownToLine className="w-3 h-3" />}
-            {adoptLabel}
-          </button>
-        )}
-      </div>
-      {expanded && (
-        <div className="px-4 py-3 border-t border-border-default">
-          {children}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function FieldRow({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
-  return (
-    <div>
-      <span className="text-xs text-text-muted">{label}：</span>
-      <span className={`text-text-primary ${highlight ? 'font-medium text-brand-primary' : ''}`}>
-        {value}
-      </span>
-    </div>
-  )
-}
-
-function CharacterCard({
-  char, selected, onToggle, adopted,
-}: {
-  char: ReverseCharacter
-  selected: boolean
-  onToggle: () => void
-  adopted: boolean
-}) {
-  return (
-    <div className={`border rounded-lg p-3 transition-colors ${selected ? 'border-brand-primary bg-brand-primary/5' : 'border-border-default'}`}>
-      <div className="flex items-center gap-2 mb-2">
-        {!adopted && (
-          <input
-            type="checkbox"
-            checked={selected}
-            onChange={onToggle}
-            className="accent-brand-primary"
+          <InspirationSingleResult
+            result={result}
+            expandedSections={expandedSections}
+            adoptedSections={adoptedSections}
+            selectedChars={selectedChars}
+            adopting={adopting}
+            onToggleSection={toggleSection}
+            onToggleCharacter={toggleChar}
+            onAdoptWorldview={handleAdoptWorldview}
+            onAdoptStoryCore={handleAdoptStoryCore}
+            onAdoptCharacters={handleAdoptCharacters}
+            onAdoptAll={handleAdoptAll}
           />
         )}
-        <span className="text-sm font-medium text-text-primary">{char.name}</span>
-        <span className="text-xs px-1.5 py-0.5 bg-bg-hover rounded text-text-muted">
-          {ROLE_LABELS[char.role] || char.role}
-        </span>
-      </div>
-      {char.shortDescription && (
-        <p className="text-xs text-brand-primary mb-1">{char.shortDescription}</p>
-      )}
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-text-muted">
-        {char.personality && <span>性格：{char.personality}</span>}
-        {char.motivation && <span>动机：{char.motivation}</span>}
-        {char.background && <span className="col-span-2">背景：{char.background}</span>}
-        {char.arc && <span className="col-span-2">弧光：{char.arc}</span>}
       </div>
     </div>
   )

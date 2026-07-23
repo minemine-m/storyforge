@@ -2,8 +2,8 @@ import { useRef, useEffect, useCallback, useMemo, type ComponentRef } from 'reac
 import ForceGraph2D from 'react-force-graph-2d'
 
 type ForceGraphHandle = ComponentRef<typeof ForceGraph2D>
-import { useCharacterRelationStore } from '../../stores/character-relation'
-import { useCharacterStore } from '../../stores/character'
+import { moralAxisColor } from '../../lib/character/character-axes'
+import type { Character, CharacterRelation } from '../../lib/types'
 
 // 关系类型对应颜色
 const RELATION_COLORS: Record<string, string> = {
@@ -35,29 +35,22 @@ type PositionedLink = GraphLink & {
   target: PositionedNode
 }
 
-const ROLE_COLORS: Record<string, string> = {
-  protagonist: '#6366f1',
-  antagonist:  '#ef4444',
-  supporting:  '#22c55e',
-  minor:       '#94a3b8',
-}
-
 interface Props {
+  characters: Character[]
+  relations: CharacterRelation[]
   width?: number
   height?: number
 }
 
-export default function RelationGraph({ width = 700, height = 480 }: Props) {
+export default function RelationGraph({ characters, relations, width = 700, height = 480 }: Props) {
   const graphRef = useRef<ForceGraphHandle | undefined>(undefined)
-  const { characters } = useCharacterStore()
-  const { relations } = useCharacterRelationStore()
 
   const graphData = useMemo(() => {
     const nodes: GraphNode[] = characters.map(c => ({
       id: String(c.id),
       name: c.name,
-      role: c.role,
-      color: ROLE_COLORS[c.role] ?? '#94a3b8',
+      role: `${c.roleWeight}/${c.orderAxis}/${c.moralAxis}`,
+      color: moralAxisColor(c.moralAxis),
     }))
 
     const links: GraphLink[] = relations.map(r => ({
