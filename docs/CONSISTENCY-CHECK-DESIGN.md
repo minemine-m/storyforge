@@ -41,7 +41,7 @@
 | 物品栏（获得/消耗流水 + 聚合） | `lib/types/item-ledger.ts`、`adapters/inventory-extract-adapter.ts` | 物品持有基准 |
 | 人物关系图 + 抽取 | `lib/types/character-relation.ts`、`lib/ai/relation-extractor.ts` | 关系基准 |
 | 章节审校（五维质量评分） | `adapters/review-adapter.ts`、`components/editor/ReviewPanel.tsx` | 骨架参照，并存互补 |
-| 静态故事线蓝图（主线/支线 + 阶段） | `lib/types/story-arc.ts`、`adapters/story-arc-adapter.ts` | Phase 39 线索注册表 |
+| 静态故事线蓝图（主线/支线 + 阶段） | `lib/types/story-arc.ts`、`lib/agent/story-arc-copilot.ts` | Phase 39 线索注册表；AI 入口经 `outline.story-arcs` durable 候选与 `adopt(storyArcs)`，人工 CRUD 保留 |
 | 生成后钩子（目前自动跑状态抽取） | `components/editor/ChapterEditor.tsx`：`handleAutoPostGenerate` | 不挂自动检测（手动），但可参照其链路 |
 
 ---
@@ -258,11 +258,14 @@ interface StorylineCrossing {        // 交叉节点
 
 ### 4.8 待开发清单
 
-1. `StorylineProgress` + `StorylineCrossing` 类型、DB 表（DB 版本 +1）、store。
-2. `adapters/storyline-track-adapter.ts`：归属 + 推进 + 交叉/新线检测。
-3. 线索进度仪表盘 UI + 交叉节点可视化。
-4. 与 Phase 38 打通：把"活跃/已收束线索 + 交叉节点"纳入事实基准（检测"已收束线被错误重启""蛰伏支线角色突然按活跃线行动"等）。
-5. 新线索候选作者确认流。
+1. ✅ `StorylineProgress` + `StorylineCrossing` 类型、DB v40 表、store。
+2. ✅ 闭集追踪适配器：归属 + 推进 + 交叉/新线检测，逐字证据回查。
+3. ✅ 线索进度仪表盘 UI + 交叉节点可视化。
+4. ✅ 与 Phase 38 打通：把"活跃/已收束线索 + 交叉节点"纳入事实基准，并同时回注正文与大纲生成。
+5. ✅ 新线索候选作者确认流；候选只驻留 UI，会话内明确创建后才进入静态注册表。
+
+> 2026-07-25 实现完成。确定性边界只覆盖闭集身份、阶段、状态、逐字来源、规范章序
+> 未来过滤和数据生命周期；“正文是否真的推进故事线”仍是模型提议 + 作者判断。
 
 ### 4.9 边界
 

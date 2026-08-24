@@ -9,14 +9,22 @@ import { db } from '../db/schema'
 import { htmlToPlainText } from '../utils/html'
 import { buildBestChapterByOutlineMap } from '../chapters/selectors'
 import type { OutlineNode, Chapter } from '../types'
+import {
+  readOwnedRows,
+  resolveReadScopeLike,
+  type WorkspaceScopeLike,
+} from '../world-engine/scope'
 
 const SEPARATOR = '\n\n---\n\n'
 
 /** 生成上下文快照文本 */
-export async function generateContextSnapshot(projectId: number): Promise<string> {
+export async function generateContextSnapshot(scopeInput: WorkspaceScopeLike): Promise<string> {
+  const scope = await resolveReadScopeLike(scopeInput)
+  const projectId = scope.projectId
   const [
     project,
     worldviews,
+    histories,
     storyCores,
     powerSystems,
     characters,
@@ -25,13 +33,14 @@ export async function generateContextSnapshot(projectId: number): Promise<string
     foreshadows,
   ] = await Promise.all([
     db.projects.get(projectId),
-    db.worldviews.where('projectId').equals(projectId).toArray(),
-    db.storyCores.where('projectId').equals(projectId).toArray(),
-    db.powerSystems.where('projectId').equals(projectId).toArray(),
-    db.characters.where('projectId').equals(projectId).toArray(),
-    db.outlineNodes.where('projectId').equals(projectId).toArray(),
-    db.chapters.where('projectId').equals(projectId).toArray(),
-    db.foreshadows.where('projectId').equals(projectId).toArray(),
+    readOwnedRows<any>(scope, 'worldviews', { owner: 'world' }),
+    readOwnedRows<any>(scope, 'histories', { owner: 'world' }),
+    readOwnedRows<any>(scope, 'storyCores', { owner: 'work' }),
+    readOwnedRows<any>(scope, 'powerSystems', { owner: 'world' }),
+    readOwnedRows<any>(scope, 'characters', { owner: 'world' }),
+    readOwnedRows<OutlineNode>(scope, 'outlineNodes', { owner: 'work' }),
+    readOwnedRows<Chapter>(scope, 'chapters', { owner: 'work' }),
+    readOwnedRows<any>(scope, 'foreshadows', { owner: 'work' }),
   ])
 
   if (!project) throw new Error('项目不存在')
@@ -50,9 +59,12 @@ export async function generateContextSnapshot(projectId: number): Promise<string
       ['世界来源', wv.worldOrigin], ['力量体系', wv.powerHierarchy],
       ['世界结构', wv.worldStructure], ['地貌分布', wv.continentLayout],
       ['气候环境', wv.climateByRegion], ['山川水系', wv.mountainsRivers],
-      ['世界历史线', wv.historyLine], ['世界大事记', wv.worldEvents],
       ['种族民族', wv.races], ['势力分布', wv.factionLayout],
-      ['政经文化', wv.politicsEconomyCulture], ['矛盾冲突', wv.internalConflicts],
+      ['政治制度', wv.politicsOverview], ['经济制度', wv.economyOverview],
+      ['文化制度', wv.cultureOverview],
+      ['政经文化（旧版资料）', !wv.politicsOverview && !wv.economyOverview && !wv.cultureOverview
+        ? wv.politicsEconomyCulture : undefined],
+      ['矛盾冲突', wv.internalConflicts],
     ]
     let hasV3 = false
     for (const [label, val] of v3) {
@@ -64,6 +76,17 @@ export async function generateContextSnapshot(projectId: number): Promise<string
       if (wv.culture) parts.push(`**文化**：${compress(wv.culture, 200)}`)
       if (wv.rules) parts.push(`**规则**：${compress(wv.rules, 200)}`)
     }
+    sections.push(parts.join('\n'))
+  }
+
+  const history = histories.find(row =>
+    (row.worldGroupId ?? null) === (wv?.worldGroupId ?? null)) ?? histories[0]
+  const historyOverview = history?.overview ||
+    [wv?.historyLine, wv?.worldEvents].filter(Boolean).join('\n\n')
+  if (historyOverview || history?.eraSystem) {
+    const parts = ['## 历史']
+    if (historyOverview) parts.push(compress(historyOverview, 500))
+    if (history?.eraSystem) parts.push(`**纪年体系**：${compress(history.eraSystem, 200)}`)
     sections.push(parts.join('\n'))
   }
 

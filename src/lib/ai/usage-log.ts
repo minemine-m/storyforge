@@ -50,6 +50,7 @@ const CATEGORY_RULES: Array<{ test: (k: string) => boolean; meta: CategoryMeta }
   { test: k => k.startsWith('inventory'), meta: { label: '物品提取', color: '#C09B6E' } },
   { test: k => k.startsWith('relation'), meta: { label: '关系提取', color: '#9B6EB0' } },
   { test: k => k.startsWith('scene.verify'), meta: { label: '场景考证', color: '#6E9BC0' } },
+  { test: k => k.startsWith('agent.'), meta: { label: 'Agent 团队', color: '#6E8FA8' } },
   { test: k => k.startsWith('review') || k.startsWith('readability'), meta: { label: '章节审校', color: '#A88B5E' } },
   { test: k => k.startsWith('codex'), meta: { label: '词条/角色聚合', color: '#5E9BA8' } },
   { test: k => k.startsWith('summary'), meta: { label: '摘要生成', color: '#8B8B8B' } },
@@ -92,10 +93,29 @@ export function modelPrice(model: string): ModelPrice {
   return MODEL_PRICING.find(p => p.match(model || ''))?.price ?? DEFAULT_PRICE
 }
 
+/**
+ * Returns null when StoryForge has no explicit price entry. Creative evidence
+ * must not present the legacy fallback price as if it were the provider's bill.
+ */
+export function knownModelPrice(model: string): ModelPrice | null {
+  return MODEL_PRICING.find(p => p.match(model || ''))?.price ?? null
+}
+
 /** 按 token 数 + 模型计算美元费用 */
 export function computeCostUsd(model: string, inputTokens: number, outputTokens: number): number {
   const p = modelPrice(model)
   return (inputTokens / 1_000_000) * p.input + (outputTokens / 1_000_000) * p.output
+}
+
+export function computeKnownCostUsd(
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+): number | null {
+  const p = knownModelPrice(model)
+  return p
+    ? (inputTokens / 1_000_000) * p.input + (outputTokens / 1_000_000) * p.output
+    : null
 }
 
 // ── 汇率（美元→人民币），可在页面调整，存 localStorage ──

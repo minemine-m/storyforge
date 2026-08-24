@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
-import type { Character, WorldGroup } from '../../lib/types'
+import type { Character, Project, WorldGroup } from '../../lib/types'
 import {
   MORAL_AXIS_LABELS,
   ORDER_AXIS_LABELS,
@@ -11,11 +11,12 @@ import CharacterAxesPicker from './CharacterAxesPicker'
 import CharacterDimensionFields from './CharacterDimensionFields'
 import CharacterStatusPanel from './CharacterStatusPanel'
 import CharacterSupplementAction from './CharacterSupplementAction'
+import CharacterWorldAffiliations from './CharacterWorldAffiliations'
 
 interface Props {
   char: Character
   glyphColor: string
-  projectId: number
+  project: Project
   multiWorld?: boolean
   worldGroups?: WorldGroup[]
   onUpdateField: (field: keyof Character, value: string) => void
@@ -27,7 +28,7 @@ interface Props {
 export default function CharacterDetailCard({
   char,
   glyphColor,
-  projectId,
+  project,
   multiWorld,
   worldGroups = [],
   onUpdateField,
@@ -61,7 +62,13 @@ export default function CharacterDetailCard({
                   const value = event.target.value
                   onPatch(value === 'cross'
                     ? { isCrossWorld: true, homeWorldGroupId: null }
-                    : { isCrossWorld: false, homeWorldGroupId: value ? Number(value) : null })
+                    : {
+                        isCrossWorld: false,
+                        homeWorldGroupId: value ? Number(value) : null,
+                        raceEntryId: null,
+                        cultivationSystemId: null,
+                        cultivationStageId: null,
+                      })
                 }}
                 className="px-1.5 py-0.5 bg-bg-elevated text-text-secondary text-[10px] rounded border border-border focus:outline-none focus:border-accent cursor-pointer"
                 title="角色所属世界"
@@ -92,7 +99,7 @@ export default function CharacterDetailCard({
         <div className="flex items-center gap-1 shrink-0">
           <CharacterSupplementAction
             character={char}
-            projectId={projectId}
+            project={project}
             worldGroupId={char.homeWorldGroupId ?? null}
             onDone={onReload}
           />
@@ -124,7 +131,14 @@ export default function CharacterDetailCard({
         compact
       />
 
-      <CharacterStatusPanel projectId={projectId} characterName={char.name} />
+      <CharacterStatusPanel projectId={project.id!} characterName={char.name} />
+
+      <CharacterWorldAffiliations
+        character={char}
+        projectId={project.id!}
+        worldGroups={worldGroups}
+        onChange={onPatch}
+      />
 
       {expanded && (
         <div className="space-y-4">

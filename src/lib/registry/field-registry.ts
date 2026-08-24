@@ -113,6 +113,38 @@ function enumeration(
 }
 
 export const FIELD_REGISTRY: FieldSpec[] = [
+  // MEMORY-5: author-edited workspace roots. Stable identities, owner IDs,
+  // active pointers and derived counters remain outside the editable surface.
+  text('projects', 'name'),
+  longtext('projects', 'description'),
+  arr('projects', 'genres'),
+  enumeration('projects', 'status', ['drafting', 'ongoing', 'paused', 'completed']),
+  num('projects', 'targetWordCount'),
+  enumeration('projects', 'creativeMode', ['fantasy', 'historical']),
+  bool('projects', 'enableMultiWorld'),
+
+  text('worlds', 'name'),
+  longtext('worlds', 'description'),
+
+  text('works', 'title'),
+  longtext('works', 'description'),
+  arr('works', 'genres'),
+  enumeration('works', 'status', ['drafting', 'ongoing', 'paused', 'completed']),
+  num('works', 'targetWordCount'),
+  text('works', 'writingStyleId'),
+  text('works', 'methodologyId'),
+
+  // HARNESS-68: AI may propose new World-owned worldGroups only through the
+  // registered collection adoption boundary. Owner IDs and timestamps are stamped.
+  text('worldGroups', 'name', ['世界名称']),
+  enumeration('worldGroups', 'type', ['traversal', 'instance', 'parallel', 'ascension', 'custom']),
+  longtext('worldGroups', 'description', ['世界描述']),
+  text('worldGroups', 'icon', ['世界图标']),
+  num('worldGroups', 'order', ['世界顺序']),
+  longtext('worldGroups', 'entryCondition', ['进入条件']),
+  longtext('worldGroups', 'powerRestriction', ['能力限制']),
+  num('worldGroups', 'plannedChapterCount', ['预计章节数']),
+
   // worldviews: legacy free-text fields still used by existing panels.
   longtext('worldviews', 'geography', ['地理']),
   longtext('worldviews', 'history', ['旧历史']),
@@ -138,8 +170,31 @@ export const FIELD_REGISTRY: FieldSpec[] = [
   longtext('worldviews', 'races', ['species', '种族']),
   longtext('worldviews', 'factionLayout', ['factions', '势力分布']),
   longtext('worldviews', 'politicsEconomyCulture', ['politics', 'economyCulture', '政治经济文化']),
+  longtext('worldviews', 'politicsOverview', ['政治概述', '政治制度概述']),
+  longtext('worldviews', 'economyOverview', ['经济概述', '经济制度概述']),
+  longtext('worldviews', 'cultureOverview', ['文化概述', '文化制度概述']),
   longtext('worldviews', 'internalConflicts', ['conflicts', '内部矛盾']),
   longtext('worldviews', 'itemDesign', ['items', 'artifactDesign', '道具设计']),
+
+  // 世界引擎人工/确定性初始化共用的正式世界基础字段。
+  // 这些表已经由 PROJECT_TABLES 管理生命周期；登记后，演示安装器也必须经 adopt() 写入，
+  // 不能为了预置内容另开直接写库旁路。
+  object('worldRulesProfiles', 'entries', ['世界规则条目']),
+  arr('worldRulesProfiles', 'customNodes', ['自定义世界规则节点']),
+  longtext('worldRulesProfiles', 'globalNote', ['世界规则总则']),
+
+  longtext('geographies', 'overview', ['地理总述']),
+  json('geographies', 'locations', ['地理地点']),
+  json('geographies', 'worldMapData', ['世界地图数据']),
+
+  longtext('histories', 'overview', ['历史总述']),
+  longtext('histories', 'eraSystem', ['纪年体系']),
+  json('histories', 'events', ['历史事件']),
+
+  text('powerSystems', 'name', ['力量体系名称']),
+  longtext('powerSystems', 'description', ['力量体系描述']),
+  json('powerSystems', 'levels', ['力量层级']),
+  longtext('powerSystems', 'rules', ['力量体系规则']),
 
   // storyCores: storyLines 作为旧字段别名归一到 mainPlot。
   longtext('storyCores', 'theme', ['主题']),
@@ -220,6 +275,21 @@ export const FIELD_REGISTRY: FieldSpec[] = [
   num('characters', 'exitChapterId'),
   num('characters', 'homeWorldGroupId', ['worldGroupId', 'homeWorld']),
   bool('characters', 'isCrossWorld'),
+  num('characters', 'raceEntryId', ['种族词条ID']),
+  num('characters', 'cultivationSystemId', ['修炼体系ID', '主修体系ID']),
+  text('characters', 'cultivationStageId', ['境界ID', '当前境界ID']),
+
+  // characterRelations：AI 提取只能在作者确认后经 adopt() 写入。
+  num('characterRelations', 'fromCharacterId', ['起点角色ID']),
+  num('characterRelations', 'toCharacterId', ['终点角色ID']),
+  enumeration(
+    'characterRelations',
+    'relationType',
+    ['family', 'lover', 'friend', 'rival', 'enemy', 'master', 'student', 'ally', 'subordinate', 'other'],
+  ),
+  text('characterRelations', 'label', ['关系名']),
+  longtext('characterRelations', 'description', ['关系描述']),
+  bool('characterRelations', 'isBidirectional', ['双向关系']),
 
   // creativeRules
   longtext('creativeRules', 'writingStyle', ['style', '文风']),
@@ -257,6 +327,7 @@ export const FIELD_REGISTRY: FieldSpec[] = [
   num('chapters', 'wordCount'),
   enumeration('chapters', 'status', ['outline', 'draft', 'revised', 'polished', 'final'], chapterStatusAliases, ['状态']),
   num('chapters', 'order'),
+  num('chapters', 'perspectiveCharacterId', ['叙事视角角色']),
   longtext('chapters', 'notes', ['笔记']),
 
   num('detailedOutlines', 'outlineNodeId'),
@@ -268,7 +339,15 @@ export const FIELD_REGISTRY: FieldSpec[] = [
   arr('detailedOutlines', 'appearingCharacterIds'),
   arr('detailedOutlines', 'foreshadowIds'),
   enumeration('detailedOutlines', 'emotionArc', ['rising', 'falling', 'flat', 'wave', 'climax']),
+  arr('detailedOutlines', 'prohibitions'),
   longtext('detailedOutlines', 'lastUsedSummary'),
+
+  // AI 情感节拍候选确认后经 adopt() 定点更新当前章节卡。
+  num('emotionBeatCards', 'chapterId'),
+  text('emotionBeatCards', 'chapterTitle'),
+  longtext('emotionBeatCards', 'overallArc'),
+  json('emotionBeatCards', 'beats'),
+  enumeration('emotionBeatCards', 'source', ['ai', 'manual']),
 
   // foreshadows / story arcs
   text('foreshadows', 'name', ['伏笔名']),
@@ -288,6 +367,30 @@ export const FIELD_REGISTRY: FieldSpec[] = [
   enumeration('storyArcs', 'type', ['main', 'sub'], { 主线: 'main', 支线: 'sub', 复线: 'sub' }),
   json('storyArcs', 'stages', ['阶段']),
   longtext('storyArcs', 'description', ['描述']),
+
+  // Phase 39：作者确认的动态故事线投影与交汇
+  num('storylineProgress', 'arcId', ['故事线ID']),
+  text('storylineProgress', 'currentStageId', ['当前阶段ID']),
+  enumeration('storylineProgress', 'status', ['dormant', 'active', 'climax', 'resolved', 'abandoned'], {
+    休眠: 'dormant',
+    活跃: 'active',
+    高潮: 'climax',
+    已解决: 'resolved',
+    已完成: 'resolved',
+    已放弃: 'abandoned',
+  }),
+  longtext('storylineProgress', 'progressNote', ['进度说明']),
+  num('storylineProgress', 'lastActiveChapterId', ['最近活跃章节ID']),
+  text('storylineProgress', 'lastActiveChapterTitle', ['最近活跃章节']),
+  json('storylineProgress', 'involvedEntities', ['涉及实体']),
+  longtext('storylineProgress', 'evidenceQuote', ['正文证据']),
+
+  num('storylineCrossings', 'arcIdA', ['故事线A']),
+  num('storylineCrossings', 'arcIdB', ['故事线B']),
+  num('storylineCrossings', 'chapterId', ['章节ID']),
+  text('storylineCrossings', 'chapterTitle', ['章节标题']),
+  longtext('storylineCrossings', 'note', ['交汇说明']),
+  longtext('storylineCrossings', 'evidenceQuote', ['正文证据']),
 
   // codex
   text('codexCategories', 'name', ['分类名']),
@@ -309,8 +412,38 @@ export const FIELD_REGISTRY: FieldSpec[] = [
   json('codexEntries', 'refs', ['引用']),
   json('codexEntries', 'tags', ['标签']),
   num('codexEntries', 'importance', ['重要度']),
+  num('codexEntries', 'cultivationSystemId', ['修炼体系ID']),
+  text('codexEntries', 'cultivationStageId', ['境界ID', '当前境界ID']),
+  num('codexEntries', 'importantLocationId', ['重要地点ID', '空间地点ID']),
   num('codexEntries', 'order'),
   num('codexEntries', 'worldGroupId'),
+
+  // WORLD-1 / Phase 37 cultivationSystems
+  text('cultivationSystems', 'name', ['体系名', '修炼体系']),
+  longtext('cultivationSystems', 'description', ['体系描述']),
+  json('cultivationSystems', 'stages', ['境界阶梯', '境界图谱']),
+  num('cultivationSystems', 'worldGroupId'),
+
+  // WORLD-1 / Phase 34 cultivationProgress
+  num('cultivationProgress', 'worldGroupId'),
+  num('cultivationProgress', 'characterId', ['角色ID']),
+  text('cultivationProgress', 'characterName', ['角色名']),
+  num('cultivationProgress', 'cultivationSystemId', ['修炼体系ID']),
+  text('cultivationProgress', 'cultivationSystemName', ['修炼体系名']),
+  text('cultivationProgress', 'stageId', ['境界ID']),
+  text('cultivationProgress', 'stageName', ['境界名']),
+  enumeration('cultivationProgress', 'transition', ['enter', 'advance', 'regress', 'switch'], {
+    初次确认: 'enter',
+    突破: 'advance',
+    倒退: 'regress',
+    改道: 'switch',
+  }),
+  num('cultivationProgress', 'sourceChapterId', ['来源章节ID']),
+  text('cultivationProgress', 'sourceChapterTitle', ['来源章节']),
+  longtext('cultivationProgress', 'sourceQuote', ['正文证据', '逐字引文']),
+  num('cultivationProgress', 'sourceOffset', ['正文位置']),
+  longtext('cultivationProgress', 'trigger', ['突破触发', '变化原因']),
+  enumeration('cultivationProgress', 'status', ['confirmed', 'stale', 'source-missing']),
 
   // importantLocations / downstream extraction products
   text('importantLocations', 'name', ['地点名']),
@@ -320,12 +453,43 @@ export const FIELD_REGISTRY: FieldSpec[] = [
   num('importantLocations', 'parentId'),
   num('importantLocations', 'sortOrder'),
 
+  // HARNESS-66: AI map configurations may update one existing world node only.
+  json('worldNodes', 'mapConfigJSON', ['地图配置']),
+
   text('itemLedger', 'itemName', ['物品名']),
   enumeration('itemLedger', 'action', ['gain', 'consume'], { 获得: 'gain', 消耗: 'consume', 失去: 'consume' }),
   num('itemLedger', 'quantity', ['数量']),
+  text('itemLedger', 'heldByName', ['持有人', '归属', '持有者', '持有角色']),
+  num('itemLedger', 'characterId', ['角色ID', '绑定角色']),
   num('itemLedger', 'chapterId'),
   text('itemLedger', 'chapterTitle', ['章节标题']),
   longtext('itemLedger', 'note', ['备注']),
+
+  // CONSISTENCY-2 角色认知事件账本
+  num('knowledgeLedger', 'worldGroupId'),
+  num('knowledgeLedger', 'characterId', ['角色ID']),
+  text('knowledgeLedger', 'characterName', ['角色名']),
+  text('knowledgeLedger', 'knowledgeKey', ['知识Key', '知识键']),
+  longtext('knowledgeLedger', 'statement', ['知识命题', '事实内容']),
+  num('knowledgeLedger', 'factId', ['关联事实ID']),
+  enumeration('knowledgeLedger', 'action', ['learn', 'mislearn', 'forget', 'correct'], {
+    获知: 'learn',
+    学会: 'learn',
+    误认: 'mislearn',
+    误以为: 'mislearn',
+    遗忘: 'forget',
+    忘记: 'forget',
+    纠正: 'correct',
+  }),
+  longtext('knowledgeLedger', 'belief', ['错误认知', '相信内容']),
+  enumeration('knowledgeLedger', 'sourceType', ['chapter', 'manual', 'import'], {
+    章节: 'chapter',
+    手动: 'manual',
+    导入: 'import',
+  }),
+  num('knowledgeLedger', 'sourceChapterId', ['来源章节ID']),
+  longtext('knowledgeLedger', 'sourceQuote', ['来源引文', '证据']),
+  enumeration('knowledgeLedger', 'status', ['candidate', 'confirmed', 'rejected', 'source-missing', 'invalid-range']),
 
   text('storyTimelineEvents', 'title', ['事件标题']),
   text('storyTimelineEvents', 'storyTime', ['故事时间']),
@@ -335,11 +499,89 @@ export const FIELD_REGISTRY: FieldSpec[] = [
   text('storyTimelineEvents', 'chapterTitle', ['章节标题']),
   num('storyTimelineEvents', 'order'),
 
+  // reference analysis (AI output must use adopt; child rows are scoped through referenceId)
+  text('references', 'genre'),
+  num('references', 'totalChars'),
+  text('references', 'fileHash'),
+  num('references', 'importSessionId'),
+  enumeration('references', 'analysisDepth', ['quick', 'deep']),
+  enumeration('references', 'analysisStatus', ['none', 'pending', 'analyzing', 'done', 'failed']),
+  num('references', 'analysisProgress'),
+  longtext('references', 'analysisError'),
+  longtext('references', 'analysisSummary'),
+  longtext('references', 'mergedCharacters'),
+
+  // IDEA-1 reference analysis versions. Source declaration is immutable per run;
+  // AI-derived status/summary updates still pass through adopt().
+  num('referenceAnalysisRuns', 'referenceId'),
+  num('referenceAnalysisRuns', 'version'),
+  enumeration('referenceAnalysisRuns', 'status', ['analyzing', 'ready', 'active', 'superseded', 'failed', 'cancelled']),
+  enumeration('referenceAnalysisRuns', 'depth', ['quick', 'deep']),
+  text('referenceAnalysisRuns', 'sourceFilename'),
+  text('referenceAnalysisRuns', 'fileHash'),
+  num('referenceAnalysisRuns', 'totalChars'),
+  enumeration('referenceAnalysisRuns', 'sourceKind', ['own-work', 'authorized', 'public-domain', 'research', 'unknown']),
+  enumeration('referenceAnalysisRuns', 'usageScope', ['analysis-only', 'creative-reference', 'continuation-authorized']),
+  longtext('referenceAnalysisRuns', 'rightsNote'),
+  bool('referenceAnalysisRuns', 'rightsConfirmed'),
+  num('referenceAnalysisRuns', 'rightsDeclaredAt'),
+  num('referenceAnalysisRuns', 'expectedChunks'),
+  num('referenceAnalysisRuns', 'completedChunks'),
+  num('referenceAnalysisRuns', 'progress'),
+  longtext('referenceAnalysisRuns', 'error'),
+  longtext('referenceAnalysisRuns', 'analysisSummary'),
+  longtext('referenceAnalysisRuns', 'mergedCharacters'),
+  num('referenceAnalysisRuns', 'completedAt'),
+  num('referenceAnalysisRuns', 'activatedAt'),
+
+  // CM-1 incremental inspiration workspace (bounded JSON strings)
+  json('inspirationWorkspaces', 'fragments'),
+  json('inspirationWorkspaces', 'versions'),
+
+  // STORY-1: AI 只能定点更新既有角色驱动方案的候选结果，不能创建或改写方案输入。
+  json('characterDrivenPlans', 'generatedVolumes'),
+  enumeration('characterDrivenPlans', 'status', ['draft', 'generated', 'adopted']),
+
+  num('referenceChunkAnalysis', 'referenceId'),
+  num('referenceChunkAnalysis', 'analysisRunId'),
+  num('referenceChunkAnalysis', 'chunkIndex'),
+  text('referenceChunkAnalysis', 'label'),
+  num('referenceChunkAnalysis', 'startOffset'),
+  num('referenceChunkAnalysis', 'endOffset'),
+  longtext('referenceChunkAnalysis', 'narrativeStyle'),
+  longtext('referenceChunkAnalysis', 'openingTechnique'),
+  longtext('referenceChunkAnalysis', 'plotStructure'),
+  longtext('referenceChunkAnalysis', 'pacingControl'),
+  longtext('referenceChunkAnalysis', 'climaxDesign'),
+  longtext('referenceChunkAnalysis', 'conflictEscalation'),
+  longtext('referenceChunkAnalysis', 'characterCraft'),
+  longtext('referenceChunkAnalysis', 'dialogueTechnique'),
+  longtext('referenceChunkAnalysis', 'proseStyle'),
+  longtext('referenceChunkAnalysis', 'emotionalBeats'),
+  longtext('referenceChunkAnalysis', 'foreshadowing'),
+  longtext('referenceChunkAnalysis', 'worldBuilding'),
+  longtext('referenceChunkAnalysis', 'otherTechniques'),
+  longtext('referenceChunkAnalysis', 'historicalContext'),
+  longtext('referenceChunkAnalysis', 'socialInstitutions'),
+  longtext('referenceChunkAnalysis', 'dailyLife'),
+  longtext('referenceChunkAnalysis', 'materialCulture'),
+  longtext('referenceChunkAnalysis', 'languageCustoms'),
+  longtext('referenceChunkAnalysis', 'rawExcerpt'),
+
   // historical dual-agent results (recordId-only adoption; see ADOPTION_SCHEMAS)
   longtext('historicalTimelineEvents', 'aiConsult'),
   longtext('historicalTimelineEvents', 'aiBrainstorm'),
   longtext('historicalKeywords', 'aiConsult'),
   longtext('historicalKeywords', 'aiBrainstorm'),
+
+  // HARNESS-76: durable style learning may replace only the generated profile
+  // and its deterministic sampling receipt. Revision pairs and calibration
+  // feedback remain explicit author actions outside this AI write boundary.
+  longtext('userStyleProfiles', 'profile'),
+  bool('userStyleProfiles', 'enabled'),
+  json('userStyleProfiles', 'sourceChapterIds'),
+  num('userStyleProfiles', 'sampleCount'),
+  num('userStyleProfiles', 'sampleWords'),
 
   enumeration('stateCards', 'category', ['character', 'location', 'item', 'faction', 'event']),
   text('stateCards', 'entityName', ['角色名', '实体名']),

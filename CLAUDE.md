@@ -1,7 +1,9 @@
-# StoryForge · 项目执行原则（接手者必读）
+# StoryForge · 项目执行原则（详细宪法）
 
-> **本文件是项目的"宪法"。任何接手者（AI 模型 / 人类开发者）第一次进入本仓库时必须先读完本文件再动手。**
-> 文件位置：仓库根目录（Claude Code / Cursor / Codex 等 AI 工具会自动加载此文件作为系统级上下文）。
+> **本文件是项目的详细宪法。** 编码 Agent 的短入口是 `AGENTS.md`；开始任务后按
+> [`docs/CONTEXT-ROUTING.md`](docs/CONTEXT-ROUTING.md) 读取本文件或其它文档的相关章节，
+> 不把所有长文档作为每个任务的固定前缀。三注册表、数据红线和完成定义不得因上下文瘦身而跳过。
+> 文件位置：仓库根目录。
 > 创建：2026-06-04 ｜ 维护者：本项目作者 + 协作 AI 模型。
 
 ---
@@ -32,6 +34,11 @@
 > **表元信息** = `PROJECT_TABLES`
 
 不管"上→下生成"（如生成章节正文）、"下→上反推"（如灵感反推）、"下游提取"（如状态卡提取）——**三类全部走同一个机制,只是 reads/writes 方向不同**。
+
+2026-08-17 起，正式模型执行还必须经过统一 Agent + Harness：领域 Skill 声明读写权限和执行版本，
+Run Contract 冻结任务、预算与完成条件，durable ledger/checkpoint/receipt 负责恢复和终态证明，
+`CreativeArtifact` 保存分级候选、问题和用量。三注册表仍是数据单一事实源；Harness 是执行控制面，
+两者不能互相替代。普通 UI 不得以“只是调用一次模型”为由绕过 Skill/Run 或 AI 入口登记。
 
 ---
 
@@ -70,21 +77,27 @@
 | 修灵感反推字段错位（AI 吐 `summary` 写不到 `worldOrigin`） → 在 InspirationPanel 里加 if/else 映射 | 改 `FIELD_REGISTRY` 给 `worldOrigin` 加 `aliases: ['summary']`，`adopt()` 自动处理 |
 | 修章节正文不读 worldRules → 在 ChapterEditor 里加一行 `buildWorldRulesContext()` | 在 `CONTEXT_SOURCES` 注册 `worldRules` 源，所有调用 `assembleContext({need:['worldRules']})` 自动注入 |
 | 加新表 → 直接 schema.ts 加 + 在 deleteProject 加一行 + 在 export 加一行 + 在 import remap 加一行... | `PROJECT_TABLES` 加一行，5 个生命周期 API 自动覆盖 |
-| 加新 AI 动作 → 写新 adapter + 在面板里手拼 `buildXxxContext + ai.start` | 走 `assembleContext + adopt`，仅在 adapter 处定义 prompt 与 reads/writes |
+| 加新 AI 动作 → 写新 adapter + 在面板里手拼 `buildXxxContext + ai.start` | 先登记 Skill/AI 入口与 Run Contract，读取走 `assembleContext`，候选走 CreativeArtifact，确认写入走 `adopt()` |
 
 **任何"先这样吧，等以后再统一"的念头 = 头疼医头 = 必然制造下一个反复出现的 bug**。直接拒绝。
 
 ---
 
-## 📚 必读文档地图（按重要程度）
+## 📚 文档地图（按任务路由）
 
 | 文档 | 地位 | 用途 |
 |---|---|---|
-| **`CLAUDE.md`（本文件）** | 🔒 项目宪法 | 任何接手者第一份必读，铁律与四问 |
-| **`docs/MASTER-BLUEPRINT.md`** | 🔴 唯一施工权威 | 重构全流程 Phase 0/1/2/3 + 三注册表数据结构 |
+| **`AGENTS.md`** | 🟢 自动入口 | 短宪法、数据红线、分支与验证要求 |
+| **`docs/CONTEXT-ROUTING.md`** | 🟢 上下文索引 | 按任务决定需要读取的章节、源码闭包和测试 |
+| **`CLAUDE.md`（本文件）** | 🔒 详细宪法 | 三注册表、四问、数据与完成定义；命中相关边界时读取 |
+| **`docs/MASTER-BLUEPRINT.md`** | 🔴 施工权威 | 有 Blueprint 任务 ID 或数据结构争议时读取对应章节 |
+| `docs/ARCHITECTURE.md` | 🟢 当前架构总览 | Agent/Harness、三注册表、World/Work、数据流与失败流 |
+| `docs/AI-HARNESS-REBUILD-RELEASE-20260817.md` | 🟢 当前更新说明 | 大架构更新、验证证据和社区发布边界 |
 | `docs/DATA-FLOW-MAP.md` | 🟡 历史审计记录 | 数据流总表 + 已修 bug 清单 |
 | `docs/DATA-FLOW-DIAGRAM.md` | 🟢 可视化辅助 | 15 张 Mermaid 流程图 |
-| `docs/ROADMAP.md` | 🟢 任务索引 | 待开发清单（按 MASTER-BLUEPRINT 重排优先级） |
+| `docs/roadmap/README.md` | 🟢 当前任务索引 | 新体系/完整功能读取对应体系、依赖与施工顺序 |
+| `docs/roadmap/CAPABILITY-BASELINE.md` | 🟢 当前能力事实 | 新体系/完整功能核对对应章节，防重复开发 |
+| `docs/roadmap/COMPLETED.md` | 🟡 完成索引 | 已交付能力与历史证据入口；完整旧文见 `ROADMAP-LEGACY.md` |
 | `docs/WORLD-RULES-MULTIWORLD-DESIGN.md` | 🟢 待实施设计 | Phase 40（多世界化真实与幻想） |
 | `docs/CODEX-REDESIGN.md` | 🟢 待实施设计 | Phase 35 词条化重构 |
 | `docs/CONSISTENCY-CHECK-DESIGN.md` | 🟢 待实施设计 | Phase 38/39 |
@@ -93,7 +106,7 @@
 
 ---
 
-## ⚠️ 接手者第一次进入项目必须知道的事
+## ⚠️ 触及生产数据或路线图时必须知道的事
 
 ### 1. 这是有真实用户的生产项目
 - 用户数据全在浏览器 IndexedDB（纯前端项目）
@@ -123,7 +136,7 @@
 
 ## 🔧 改动前的检查清单（每次 commit 前必过）
 
-- [ ] 已读 `MASTER-BLUEPRINT.md` 对应任务的「前置 / 改法 / 验证 / 完成判据」
+- [ ] 已按 `docs/CONTEXT-ROUTING.md` 建立关联闭包；有 Blueprint ID 时已读对应任务的「前置 / 改法 / 验证 / 完成判据」
 - [ ] 已过「四问」（§动手前的「四问」）
 - [ ] 改在分支上（非 main），分支名 `refactor/phase-X-task-Y` 或 `fix/issue-Z`
 - [ ] `npx tsc --noEmit` 零错
@@ -153,7 +166,7 @@
 
 ## 🛑 立刻停下来的信号
 
-任何接手者遇到以下情况 → **立刻停下，写到 ROADMAP，开 issue，等决策。不要"我觉得应该可以"**：
+任何接手者遇到以下情况 → **立刻停下，写到 `docs/roadmap/README.md` 对应体系，开 issue，等决策。不要"我觉得应该可以"**：
 
 - 反例测试某条失败且 30 分钟内修不好
 - tsc 错误不能解
@@ -169,12 +182,11 @@
 
 如果接手者是另一个 AI 模型（GPT / Gemini / Claude 其他会话）：
 
-1. **先读本文件 + `MASTER-BLUEPRINT.md` §0–§3**（建立宪法认知）
-2. 再读 §1.2（项目当前漏洞分级）+ §1.3（已确认无效的修复 — **不要踩坑**）
-3. 然后读 §4 找到你被分配的 Phase
-4. 严格按"前置 → 改法 → 验证 → 完成判据"执行
-5. **不要假设"你记得之前模型做了什么"** — 一切以 `git log` 和本文档为准
-6. 完成一个任务后等审查（默认审查者：另一个 AI 模型 / 人类）才能合并到 main
+1. 从 `AGENTS.md` 进入，按 `docs/CONTEXT-ROUTING.md` 定位任务相关的宪法、路线图和 Blueprint 段落。
+2. 用任务 ID、符号、调用方和测试建立关联闭包；历史只通过 `git log` / `rg` 取证。
+3. 有 Blueprint 任务 ID 时，严格按对应段落的"前置 → 改法 → 验证 → 完成判据"执行。
+4. **不要假设"你记得之前模型做了什么"** — 一切以当前代码、测试和 `git log` 为准。
+5. 完成一个任务后等审查（默认审查者：另一个 AI 模型 / 人类）才能合并到 main。
 
 ---
 
@@ -184,6 +196,7 @@
 - 添加新的"反面教材"或"四问"延伸时，可以追加（不需授权），但不能修改铁律本身
 - 本文件不应超过 500 行；过长意味着失焦
 - 文件应在每个 Phase 完成后做一次"是否还准确"的复核
+- 自动入口与路由由 `npm run check:agent-context` 守护，任务专用长内容不得回填到 `AGENTS.md`
 
 ---
 

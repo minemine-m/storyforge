@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Square, Check, RotateCcw, Loader2, ThumbsUp, ThumbsDown, Braces, ChevronDown, ChevronRight, X } from 'lucide-react'
 import { usePromptStore } from '../../stores/prompt'
 import type { PromptModuleKey, PromptExample } from '../../lib/types/prompt'
@@ -15,8 +15,8 @@ interface AIStreamOutputProps {
   tokenUsage?: TokenUsage | null
   /** 停止生成 */
   onStop: () => void
-  /** 采纳内容 */
-  onAccept: (text: string) => void
+  /** 采纳内容；结构化结果由调用方单独审查/应用时可省略 */
+  onAccept?: (text: string) => void
   /** 重试 */
   onRetry: () => void
   /** 关闭/弃用本次结果（不写回正文）。传入则显示「关闭」按钮 */
@@ -25,6 +25,8 @@ interface AIStreamOutputProps {
   placeholder?: string
   /** P15：传入则显示「⭐ 好示例 / 💩 坏示例」标记按钮，写入对应模板的 examples */
   moduleKey?: PromptModuleKey
+  /** 允许作者在确认前直接修订候选；修订文本只会在点击采纳时提交校验。 */
+  editable?: boolean
 }
 
 /**
@@ -42,13 +44,17 @@ export default function AIStreamOutput({
   placeholder = '点击生成按钮，让 AI 为你创作...',
   moduleKey,
   tokenUsage,
+  editable = false,
 }: AIStreamOutputProps) {
-  const hasOutput = output.length > 0
+  const [editableOutput, setEditableOutput] = useState(output)
+  useEffect(() => setEditableOutput(output), [output])
+  const displayedOutput = editable && !isStreaming ? editableOutput : output
+  const hasOutput = displayedOutput.length > 0
   const [marked, setMarked] = useState<'good' | 'bad' | null>(null)
   const [showRaw, setShowRaw] = useState(false)
 
   // 检测是否结构化输出（JSON）——这类内容是给程序解析的，不该让用户直接读原始 JSON
-  const trimmed = output.trimStart()
+  const trimmed = displayedOutput.trimStart()
   const isStructured = hasOutput && (
     trimmed.startsWith('{') || trimmed.startsWith('[') || /^```(?:json)?\s*[[{]/.test(trimmed)
   )
@@ -74,8 +80,8 @@ export default function AIStreamOutput({
   }
 
   // Phase 21.1: 生成中 token 估算（中文 ≈ 1.5 token/字，英文 ≈ 1.3 token/word）
-  const estimatedOutputTokens = isStreaming && !tokenUsage && output.length > 0
-    ? Math.round(output.length * 1.5)
+  const estimatedOutputTokens = isStreaming && !tokenUsage && displayedOutput.length > 0
+    ? Math.round(displayedOutput.length * 1.5)
     : null
 
   return (
@@ -100,6 +106,13 @@ export default function AIStreamOutput({
               </p>
             )}
           </div>
+        ) : editable && hasOutput && !isStreaming ? (
+          <textarea
+            aria-label="AI 候选可编辑内容"
+            value={editableOutput}
+            onChange={event => setEditableOutput(event.target.value)}
+            className="min-h-[260px] w-full resize-y rounded border border-border bg-bg-surface p-3 font-mono text-xs leading-5 text-text-primary outline-none focus:border-accent"
+          />
         ) : isStructured ? (
           // 结构化（JSON）输出：不直接展示原始 JSON，给友好提示 + 可折叠原文
           <div className="space-y-2">
@@ -107,10 +120,17 @@ export default function AIStreamOutput({
               <Braces className="w-4 h-4 text-accent shrink-0" />
               {isStreaming ? (
                 <span className="flex items-center gap-1.5">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> AI 正在生成结构化内容…（完成后点「采纳」自动整理为可编辑内容）
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  {onAccept
+                    ? 'AI 正在生成结构化内容…（完成后点「采纳」自动整理为可编辑内容）'
+                    : 'AI 正在生成结构化内容…（完成后将在下方生成可审查计划）'}
                 </span>
               ) : (
-                <span>✓ 已生成结构化内容，点「采纳」自动整理填入对应栏目。</span>
+                <span>
+                  {onAccept
+                    ? '✓ 已生成结构化内容，点「采纳」自动整理填入对应栏目。'
+                    : '✓ 已生成结构化内容，系统已解析为下方可审查计划。'}
+                </span>
               )}
             </div>
             <button
@@ -121,12 +141,12 @@ export default function AIStreamOutput({
               {showRaw ? '收起原始数据' : '查看原始数据'}
             </button>
             {showRaw && (
-              <pre className="text-xs text-text-muted bg-bg-base/50 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-60">{output}</pre>
+              <pre className="text-xs text-text-muted bg-bg-base/50 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-60">{displayedOutput}</pre>
             )}
           </div>
         ) : hasOutput ? (
           <div className="text-text-primary text-sm leading-relaxed whitespace-pre-wrap">
-            {output}
+            {displayedOutput}
             {isStreaming && (
               <span className="inline-block w-1.5 h-4 bg-accent ml-0.5 animate-pulse" />
             )}
@@ -144,7 +164,7 @@ export default function AIStreamOutput({
       {/* 操作栏 */}
       <div className="flex items-center justify-between px-4 py-2 bg-bg-elevated border-t border-border">
         <span className="text-text-muted text-xs flex items-center gap-2">
-          {hasOutput && <span>{output.length} 字</span>}
+          {hasOutput && <span>{displayedOutput.length} 字</span>}
           {tokenUsage ? (
             <span title={`输入 ${tokenUsage.inputTokens} + 输出 ${tokenUsage.outputTokens}`}>
               Token: ↑{tokenUsage.inputTokens.toLocaleString()} ↓{tokenUsage.outputTokens.toLocaleString()}
@@ -206,9 +226,9 @@ export default function AIStreamOutput({
                   </button>
                 </>
               )}
-              {hasOutput && !error && (
+              {hasOutput && !error && onAccept && (
                 <button
-                  onClick={() => onAccept(output)}
+                  onClick={() => onAccept(displayedOutput)}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-accent text-white rounded-md hover:bg-accent-hover transition-colors"
                 >
                   <Check className="w-3 h-3" />

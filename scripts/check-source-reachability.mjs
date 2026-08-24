@@ -21,6 +21,18 @@ const entrypoints = [
   'src/main.tsx',
   // Product-approved i18n scaffold: retained until the English milestone is decided.
   'src/i18n/index.ts',
+  // AGENT-1 Phase 27.1-a/b is a headless public boundary for tools and the read-only AgentRunner.
+  // Keep it independently testable without eagerly bundling the future copilot into the current UI.
+  'src/lib/agent/index.ts',
+  // FLOW-3 public domain-node boundary is exercised by regression tests and external tooling.
+  'src/lib/node-authoring/index.ts',
+  // HARNESS-26 is a headless offline release-evaluation boundary; production routing must not import it.
+  'src/lib/evals/agent-harness/paired-workflow.ts',
+  // HARNESS-28 is the headless long-consistency fixture/verifier/artifact boundary; it remains report-only.
+  'src/lib/evals/long-consistency/index.ts',
+  // FLOW-2 compatibility workspace remains intentionally reachable for old graphs and migration tests
+  // while the product entry points use NodeAuthoringWorkspace.
+  'src/components/node-flow/NodeModeWorkspace.tsx',
 ].map(file => path.resolve(root, file))
 
 const graph = new Map()

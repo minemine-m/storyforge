@@ -9,9 +9,10 @@
  *  - 多世界按 worldGroupId 隔离（与 buildCurrentWorldContext 同源）；
  *    传 null/undefined 表示主世界/单世界，读取未归属世界组的词条。
  */
-import { db } from '../db/schema'
+import { readOwnedRows, resolveScope } from '../world-engine/scope'
+import type { WorkspaceScope } from '../types/world-ownership'
 import {
-  parseEntryFields, parseFieldSchema,
+  codexEntryInWorld, parseEntryFields, parseFieldSchema,
   type CodexCategory, type CodexEntry,
 } from '../types/codex'
 
@@ -32,34 +33,29 @@ export async function buildCodexContext(
   projectId: number,
   worldGroupId?: number | null,
   opts: BuildOptions = {},
+  scope?: WorkspaceScope,
 ): Promise<string> {
   const maxChars = opts.maxChars ?? 2500
   const maxPerCategory = opts.maxPerCategory ?? 30
   const maxFields = opts.maxFieldsPerEntry ?? 3
 
+  const resolved = scope ?? await resolveScope({ projectId })
   const [allCats, allEntries] = await Promise.all([
-    db.codexCategories.where('projectId').equals(projectId).toArray(),
-    db.codexEntries.where('projectId').equals(projectId).toArray(),
+    readOwnedRows<CodexCategory>(resolved, 'codexCategories', { owner: 'world' }),
+    readOwnedRows<CodexEntry>(resolved, 'codexEntries', { owner: 'world' }),
   ])
   if (allEntries.length === 0) return ''
 
   const wg = worldGroupId ?? null
-  // 全局项（worldGroupId=null，如内置分类）在任何世界都可见；
-  // 世界专属项仅在其所属世界可见。单世界（wg=null）时只含全局项。
-  const inWorld = <T extends { worldGroupId?: number | null }>(x: T) => {
-    const w = x.worldGroupId ?? null
-    return w === null || w === wg
-  }
-
-  // 仅取当前世界、未隐藏分类下的词条
+  // 分类 schema 项目级共享；词条严格按当前世界隔离。
   const cats = allCats
-    .filter(c => !c.hidden && inWorld(c))
+    .filter(c => !c.hidden)
     .sort((a, b) => a.order - b.order)
   const catById = new Map<number, CodexCategory>(cats.map(c => [c.id!, c]))
 
   const entriesByCat = new Map<number, CodexEntry[]>()
   for (const e of allEntries) {
-    if (!inWorld(e)) continue
+    if (!codexEntryInWorld(e, wg)) continue
     if (!catById.has(e.categoryId)) continue
     const list = entriesByCat.get(e.categoryId) || []
     list.push(e)

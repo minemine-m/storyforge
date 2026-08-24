@@ -1,10 +1,11 @@
 import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { UseAIStreamReturn } from '../../src/hooks/useAIStream'
 import type { AssembleContextResult } from '../../src/lib/registry/types'
 import type { OutlineNode, Project } from '../../src/lib/types'
 import { useOutlineGenerationController } from '../../src/components/outline/useOutlineGenerationController'
+import { OUTLINE_DURABLE_HARNESS_STORAGE_KEY } from '../../src/lib/outline/harness'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -67,11 +68,17 @@ let controller: ReturnType<typeof useOutlineGenerationController>
 
 function createAI(operation: string | null = null) {
   return {
+    output: '',
+    isStreaming: false,
     operation,
     reset: vi.fn(),
+    restore: vi.fn(),
     setOperation: vi.fn(),
     start: vi.fn(async () => ''),
-  } satisfies Pick<UseAIStreamReturn, 'operation' | 'reset' | 'setOperation' | 'start'>
+  } satisfies Pick<
+    UseAIStreamReturn,
+    'isStreaming' | 'operation' | 'output' | 'reset' | 'restore' | 'setOperation' | 'start'
+  >
 }
 
 async function mount(patch: Partial<Parameters<typeof useOutlineGenerationController>[0]> = {}) {
@@ -102,12 +109,17 @@ async function mount(patch: Partial<Parameters<typeof useOutlineGenerationContro
   return { options, ai }
 }
 
+beforeEach(() => {
+  localStorage.setItem(OUTLINE_DURABLE_HARNESS_STORAGE_KEY, 'disabled')
+})
+
 afterEach(async () => {
   while (mounted.length > 0) {
     const item = mounted.pop()!
     await act(async () => item.root.unmount())
     item.host.remove()
   }
+  localStorage.removeItem(OUTLINE_DURABLE_HARNESS_STORAGE_KEY)
 })
 
 describe('AUDIT-6 · 大纲生成 controller', () => {
@@ -156,6 +168,68 @@ describe('AUDIT-6 · 大纲生成 controller', () => {
     expect(ai.start).toHaveBeenCalledOnce()
     expect(ai.start.mock.calls[0][2]).toEqual({ category: 'outline.chapter', projectId: 1 })
     expect(controller.pendingRequest).toBeNull()
+  })
+
+  it('运行追踪初始化失败不能阻断原模型调用', async () => {
+    const malformedAssembly = {
+      ...assembled('仍可发送'),
+      included: ['unregistered-source'],
+    }
+    const ai = createAI()
+    const onError = vi.fn()
+    await mount({
+      ai,
+      onError,
+      assembleContext: vi.fn(async () => malformedAssembly),
+    })
+
+    await act(async () => { await controller.prepare({ kind: 'chapters', volumeId: 1 }) })
+    await act(async () => { await controller.confirm() })
+
+    expect(ai.start).toHaveBeenCalledOnce()
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('透明模式先停在最终消息闸门，编辑后才把本次副本交给 AI', async () => {
+    const ai = createAI()
+    await mount({ ai })
+
+    await act(async () => { await controller.prepare({ kind: 'chapters', volumeId: 1 }) })
+    const originalMessages = controller.preparedNode!.messages.map(message => ({ ...message }))
+    await act(async () => controller.setTransparentMode(true))
+    await act(async () => { await controller.confirm() })
+
+    expect(ai.start).not.toHaveBeenCalled()
+    expect(controller.promptReviewOpen).toBe(true)
+    expect(controller.pendingRequest).toEqual({ kind: 'chapters', volumeId: 1 })
+
+    const editedMessages = originalMessages.map((message, index) => (
+      index === originalMessages.length - 1
+        ? { ...message, content: `${message.content}\n作者本次补充：避免巧合推进。` }
+        : message
+    ))
+    await act(async () => { await controller.confirmMessages(editedMessages) })
+
+    expect(ai.start).toHaveBeenCalledOnce()
+    expect(ai.start.mock.calls[0][0]).toEqual(editedMessages)
+    expect(originalMessages.at(-1)?.content).not.toContain('作者本次补充')
+    expect(controller.pendingRequest).toBeNull()
+  })
+
+  it('取消或发起新请求会清掉透明模式与未发送草稿入口', async () => {
+    await mount()
+    await act(async () => { await controller.prepare({ kind: 'chapters', volumeId: 1 }) })
+    await act(async () => controller.setTransparentMode(true))
+    await act(async () => { await controller.confirm() })
+    expect(controller.promptReviewOpen).toBe(true)
+
+    await act(async () => controller.cancel())
+    expect(controller.transparentMode).toBe(false)
+    expect(controller.promptReviewOpen).toBe(false)
+
+    await act(async () => { await controller.prepare({ kind: 'chapters', volumeId: 2 }) })
+    expect(controller.transparentMode).toBe(false)
+    expect(controller.promptReviewOpen).toBe(false)
   })
 
   it('重试时上下文装配失败会重置会话并反馈，不产生悬空异常', async () => {

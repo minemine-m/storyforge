@@ -9,6 +9,13 @@ import { useFactLedgerStore } from '../../stores/fact-ledger'
 import { getFactPredicate } from '../../lib/registry/fact-predicate-registry'
 import type { FactStatus } from '../../lib/types/temporal-fact'
 import { exportFactMemoryMarkdown } from '../../lib/fact-ledger/human-readable-io'
+import KnowledgeLedgerPanel from './KnowledgeLedgerPanel'
+import WorldConstitutionPanel from './WorldConstitutionPanel'
+import {
+  INITIAL_RECORD_TARGET_CLASS,
+  initialRecordTargetAttributes,
+  useInitialRecordTarget,
+} from '../shared/initial-record-target'
 
 type FactTab = FactStatus | 'exceptions'
 
@@ -38,11 +45,18 @@ const STATUS_HINT: Partial<Record<FactStatus, string>> = {
   'invalid-range': 'validFrom/validTo 指向的章节已失效；需要人工重设或确认。',
 }
 
-export default function FactLibraryPanel({ project }: { project: Project }) {
+export default function FactLibraryPanel({
+  project,
+  initialFactId,
+}: {
+  project: Project
+  initialFactId?: number | null
+}) {
   const { facts, loading, load, confirmFact, rejectFact, importCandidateDiff } = useFactLedgerStore()
   const [tab, setTab] = useState<FactTab>('exceptions')
   const [diffText, setDiffText] = useState('')
   const [ioMsg, setIoMsg] = useState('')
+  const [libraryMode, setLibraryMode] = useState<'facts' | 'knowledge' | 'constitution'>('facts')
 
   useEffect(() => { if (project.id != null) void load(project.id) }, [project.id, load])
 
@@ -56,6 +70,20 @@ export default function FactLibraryPanel({ project }: { project: Project }) {
   const rows = useMemo(() => tab === 'exceptions'
     ? facts.filter(f => EXCEPTION_STATUSES.includes(f.status))
     : facts.filter(f => f.status === tab), [facts, tab])
+  const targetFact = useMemo(
+    () => facts.find(fact => fact.id === initialFactId) ?? null,
+    [facts, initialFactId],
+  )
+
+  useEffect(() => {
+    if (!targetFact) return
+    setLibraryMode('facts')
+    setTab(EXCEPTION_STATUSES.includes(targetFact.status) ? 'exceptions' : targetFact.status)
+  }, [targetFact])
+  useInitialRecordTarget(
+    initialFactId,
+    libraryMode === 'facts' && rows.some(fact => fact.id === initialFactId),
+  )
 
   const handleExport = async () => {
     if (project.id == null) return
@@ -82,11 +110,30 @@ export default function FactLibraryPanel({ project }: { project: Project }) {
     }
   }
 
+  if (libraryMode === 'knowledge') {
+    return <KnowledgeLedgerPanel project={project} onShowFacts={() => setLibraryMode('facts')} />
+  }
+  if (libraryMode === 'constitution') {
+    return <WorldConstitutionPanel project={project} onShowFacts={() => setLibraryMode('facts')} />
+  }
+
   return (
     <div className="p-6 max-w-4xl mx-auto">
-      <div className="flex items-center gap-2 mb-1">
-        <Database className="w-5 h-5 text-sky-400" />
-        <h1 className="text-lg font-bold text-text-primary">事实库（NS-4 长期一致性）</h1>
+      <div className="flex items-center justify-between gap-3 mb-1">
+        <div className="flex items-center gap-2">
+          <Database className="w-5 h-5 text-sky-400" />
+          <h1 className="text-lg font-bold text-text-primary">事实库（NS-4 长期一致性）</h1>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setLibraryMode('constitution')}
+            className="px-3 py-1.5 text-xs rounded-md bg-amber-500/10 text-amber-300 hover:bg-amber-500/20">
+            查看世界宪法
+          </button>
+          <button onClick={() => setLibraryMode('knowledge')}
+            className="px-3 py-1.5 text-xs rounded-md bg-violet-500/10 text-violet-300 hover:bg-violet-500/20">
+            查看角色认知
+          </button>
+        </div>
       </div>
       <p className="text-xs text-text-muted mb-4">
         在章节里点「提取事实」抽取候选；确认后的事实会在写后续章节时自动注入。正文修改、删章、删角色会进入异常待复核，不会继续污染生成上下文。
@@ -127,7 +174,13 @@ export default function FactLibraryPanel({ project }: { project: Project }) {
         {rows.map(f => {
           const spec = getFactPredicate(f.predicate)
           return (
-            <div key={f.id} className="flex items-start gap-3 p-3 bg-bg-elevated rounded-lg border border-border">
+            <div
+              key={f.id}
+              {...initialRecordTargetAttributes(f.id === initialFactId, f.id)}
+              className={`flex items-start gap-3 p-3 bg-bg-elevated rounded-lg border border-border ${
+                f.id === initialFactId ? INITIAL_RECORD_TARGET_CLASS : ''
+              }`}
+            >
               <div className="flex-1 min-w-0">
                 <p className="text-sm text-text-primary">
                   <span className="font-medium">{f.subjectName}</span>

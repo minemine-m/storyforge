@@ -1,3 +1,5 @@
+/* global console, process */
+
 /**
  * 架构守护 lint(Phase 3.3)
  *
@@ -12,12 +14,15 @@
  *   ⑤ PROJECT_TABLES exportable 表必须接入 JSON 导出/导入
  *   ⑥ components/hooks/pages 不得使用浏览器原生 alert/confirm/prompt
  *   ⑦ 正式 UI 不得出现"正在开发/即将推出/敬请期待"式死入口文案
+ *   ⑩ 绑定文件夹不得恢复页面进入/定时静默写盘；旧 JSON 只能显式保存
+ *   ⑪ PROJECT_TABLES 的工作区记忆分类必须由同一注册表 100% 派生
  *
  * 用法:node scripts/check-architecture.mjs
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import ts from 'typescript'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -34,6 +39,38 @@ function walk(dir, acc = []) {
 
 const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8')
 const violations = []
+
+function parseSource(rel) {
+  return ts.createSourceFile(rel, read(rel), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+}
+
+function visit(node, callback) {
+  callback(node)
+  ts.forEachChild(node, child => visit(child, callback))
+}
+
+function propertyName(node) {
+  if (!node?.name) return null
+  if (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) return node.name.text
+  return null
+}
+
+function objectProperty(object, name) {
+  return object.properties.find(property =>
+    ts.isPropertyAssignment(property) && propertyName(property) === name,
+  )
+}
+
+function stringValue(node) {
+  return node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
+    ? node.text
+    : null
+}
+
+function stringArrayValue(node) {
+  if (!node || !ts.isArrayLiteralExpression(node)) return []
+  return node.elements.map(stringValue).filter(value => value != null)
+}
 
 // ── ① stores 手写事务表清单 ──
 // 允许小事务(≤2 表,如 chapter 的 chapters+emotionBeatCards),禁止大表清单(≥5 表)
@@ -203,6 +240,176 @@ for (const dir of UI_DIRS) {
     if (!m) continue
     const line = src.slice(0, m.index).split('\n').length
     violations.push(`[⑦半成品文案] ${file}:${line}: 正式 UI 不得出现"${m[0]}"式死入口承诺;请隐藏入口、标记 Labs 禁用态,或指向已上线流程`)
+  }
+}
+
+// ── ⑧ src/lib 的 AI/结构化写回不得绕过 adopt 或已登记领域扩展 ──
+const fieldRegistryAst = parseSource('src/lib/registry/field-registry.ts')
+const governedWriteTargets = new Set()
+const fieldHelpers = new Set(['text', 'longtext', 'num', 'bool', 'json', 'object', 'arr', 'enumeration', 'enumField', 'field'])
+visit(fieldRegistryAst, node => {
+  if (!ts.isCallExpression(node) || !ts.isIdentifier(node.expression) || !fieldHelpers.has(node.expression.text)) return
+  const target = stringValue(node.arguments[0])
+  if (target) governedWriteTargets.add(target)
+})
+
+const adoptionAst = parseSource('src/lib/registry/adoption-schema.ts')
+const extensionEntrypoints = new Map()
+visit(adoptionAst, node => {
+  if (!ts.isObjectLiteralExpression(node)) return
+  const target = stringValue(objectProperty(node, 'target')?.initializer)
+  const policyRegistry = stringValue(objectProperty(node, 'policyRegistry')?.initializer)
+  const reviewAfter = stringValue(objectProperty(node, 'reviewAfter')?.initializer)
+  const entrypoints = stringArrayValue(objectProperty(node, 'entrypoints')?.initializer)
+  if (!target || !policyRegistry || !reviewAfter || !entrypoints.length) return
+  governedWriteTargets.add(target)
+  for (const entrypoint of entrypoints) {
+    const targets = extensionEntrypoints.get(entrypoint) ?? new Set()
+    targets.add(target)
+    extensionEntrypoints.set(entrypoint, targets)
+  }
+  if (reviewAfter < new Date().toISOString().slice(0, 10)) {
+    violations.push(`[⑧扩展到期] ${target}: ADOPTION_EXTENSIONS 已到复审日期 ${reviewAfter}`)
+  }
+})
+
+const writeMethods = new Set(['add', 'update', 'put', 'delete', 'bulkDelete', 'bulkPut', 'clear'])
+function dbTableFromExpression(node) {
+  if (ts.isPropertyAccessExpression(node)) {
+    if (ts.isIdentifier(node.expression) && node.expression.text === 'db') return node.name.text
+    return dbTableFromExpression(node.expression)
+  }
+  if (ts.isCallExpression(node)) return dbTableFromExpression(node.expression)
+  return null
+}
+
+function findDbWrites(sourceFile) {
+  const writes = []
+  visit(sourceFile, node => {
+    if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return
+    const method = node.expression.name.text
+    if (!writeMethods.has(method)) return
+    const target = dbTableFromExpression(node.expression.expression)
+    if (!target) return
+    writes.push({
+      target,
+      method,
+      line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+    })
+  })
+  return writes
+}
+
+for (const file of walk('src/lib')) {
+  if (file === 'src/lib/registry/adopt.ts' || file.startsWith('src/lib/registry/')) continue
+  if (file.startsWith('src/lib/evals/')) continue
+  const sourceFile = parseSource(file)
+  for (const { target, method, line } of findDbWrites(sourceFile)) {
+    if (!governedWriteTargets.has(target)) continue
+    if (extensionEntrypoints.get(file)?.has(target)) continue
+    violations.push(`[⑧lib写回旁路] ${file}:${line}: db.${target}.${method}(...) 必须走 adopt() 或 ADOPTION_EXTENSIONS 登记入口`)
+  }
+}
+
+// ── ⑨ 旧 context builder 不得绕过 CONTEXT_SOURCES ──
+const legacyContextBuilders = new Set([
+  'buildWorldContext',
+  'buildCharacterContext',
+  'buildCodexContext',
+  'buildHistoricalContext',
+  'buildLocationContext',
+  'buildRefAnalysisContext',
+  'buildWorldRulesContext',
+])
+function findLegacyContextCalls(sourceFile) {
+  const calls = []
+  visit(sourceFile, node => {
+    if (!ts.isCallExpression(node) || !ts.isIdentifier(node.expression)) return
+    if (!legacyContextBuilders.has(node.expression.text)) return
+    calls.push({
+      name: node.expression.text,
+      line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+    })
+  })
+  return calls
+}
+
+for (const dir of ['src/components', 'src/hooks', 'src/pages', 'src/lib']) {
+  for (const file of walk(dir)) {
+    if (file === 'src/lib/registry/context-sources.ts') continue
+    const sourceFile = parseSource(file)
+    for (const { name, line } of findLegacyContextCalls(sourceFile)) {
+      violations.push(`[⑨上下文旁路] ${file}:${line}: ${name}(...) 必须由 CONTEXT_SOURCES + assembleContext() 调用`)
+    }
+  }
+}
+
+// 守卫自测：防止 AST 扫描器自身退化后与被检查代码一起“假绿”。
+const selfTestSource = ts.createSourceFile(
+  'architecture-self-test.ts',
+  "await db.references.update(1, {}); await db.referenceChunkAnalysis.where('referenceId').equals(1).delete(); buildCodexContext(1, null)",
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TS,
+)
+const selfTestWrites = findDbWrites(selfTestSource).map(write => `${write.target}.${write.method}`)
+if (!selfTestWrites.includes('references.update') || !selfTestWrites.includes('referenceChunkAnalysis.delete')) {
+  violations.push('[⑧守卫自测] lib 写回 AST 扫描器未识别基准违规')
+}
+if (!findLegacyContextCalls(selfTestSource).some(call => call.name === 'buildCodexContext')) {
+  violations.push('[⑨守卫自测] context builder AST 扫描器未识别基准违规')
+}
+
+// ── ⑩ MEMORY-0 文件写入边界 ──
+const removedFolderAutoBackup = 'src/hooks/useFolderAutoBackup.ts'
+if (fs.existsSync(path.join(root, removedFolderAutoBackup))) {
+  violations.push(`[⑩静默文件写入] ${removedFolderAutoBackup}: 本地文件夹不得在页面进入或定时器中自动覆盖`)
+}
+
+for (const dir of UI_DIRS) {
+  for (const file of walk(dir)) {
+    const src = read(file)
+    if (/\bwriteProjectJSONToFolder\b/.test(src)) {
+      violations.push(`[⑩旧写盘入口] ${file}: 已下线的 writeProjectJSONToFolder 不得恢复`)
+    }
+    if (/\bwriteProjectSnapshotToFolder\b/.test(src) && file !== 'src/components/data/DataManagementPanel.tsx') {
+      violations.push(`[⑩快照旁路] ${file}: 完整 JSON 快照只能由数据管理面板的明确用户操作触发`)
+    }
+  }
+}
+
+const dataManagementSource = read('src/components/data/DataManagementPanel.tsx')
+const snapshotWriteCalls = dataManagementSource.match(/\bwriteProjectSnapshotToFolder\s*\(/g) ?? []
+if (snapshotWriteCalls.length !== 1 || !/const handleSaveToFolder[\s\S]*?writeProjectSnapshotToFolder\s*\(/.test(dataManagementSource)) {
+  violations.push('[⑩快照入口] DataManagementPanel 必须且只能在 handleSaveToFolder 的明确点击路径写一次完整 JSON 快照')
+}
+
+// ── ⑪ MEMORY-10 全表记忆分类 ──
+if (!/const PROJECT_TABLE_REGISTRATIONS:[\s\S]*?export const PROJECT_TABLES:[\s\S]*?PROJECT_TABLE_REGISTRATIONS\.map\(/.test(registrySrc)) {
+  violations.push('[⑪记忆分类] PROJECT_TABLES 必须从唯一注册表登记派生 100% memoryClassification')
+}
+for (const classification of ['editable', 'evidence', 'derived-none', 'not-applicable']) {
+  if (!registrySrc.includes(`classification: '${classification}'`)) {
+    violations.push(`[⑪记忆分类] PROJECT_TABLES 缺少 ${classification} 明确策略`)
+  }
+}
+if (!/memoryClassification:\s*classifyWorkspaceMemory\(spec\)/.test(registrySrc)) {
+  violations.push('[⑪记忆分类] 新表可能绕过 classifyWorkspaceMemory')
+}
+
+// ── ⑫ Harness 终态必须在公共事件事务内结算为记忆 ──
+const eventStoreSource = read('src/lib/agent/run/event-store.ts')
+if (!/RESERVED_EVENT_TYPES[\s\S]*?'memory\.settlement\.recorded'/.test(eventStoreSource)) {
+  violations.push('[⑫记忆结算权限] memory.settlement.recorded 必须是 event-store 专用保留事件')
+}
+if (!/const next = await appendPrivilegedAgentRunEventInTransactionV1\(snapshot, event\)[\s\S]*?const settlementEvent = parseAgentRunEventV1\([\s\S]*?return appendPrivilegedAgentRunEventInTransactionV1\(next, settlementEvent\)/.test(eventStoreSource)) {
+  violations.push('[⑫记忆结算原子性] Harness 终态与 memory settlement 必须在 appendAgentRunEventV1 同一事务追加')
+}
+for (const file of walk('src/lib')) {
+  if (file === 'src/lib/agent/run/event-store.ts') continue
+  const src = read(file)
+  if (/type:\s*['"]memory\.settlement\.recorded['"]/.test(src)) {
+    violations.push(`[⑫记忆结算旁路] ${file}: memory settlement 只能由公共 event-store 发出`)
   }
 }
 

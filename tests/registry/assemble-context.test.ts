@@ -78,6 +78,70 @@ describe('Phase 1.3a · 统一上下文装配层', () => {
     expect(assembled.text).not.toContain('澜青')
   })
 
+  it('targetCharacter 精确读取一个角色完整字段并记录原始来源哈希', async () => {
+    const now = Date.now()
+    const projectId = await createProject()
+    const worldId = await db.worldGroups.add({
+      projectId, name: '主世界', type: 'primary', order: 0, createdAt: now, updatedAt: now,
+    } as any) as number
+    const targetId = await db.characters.add({
+      projectId,
+      homeWorldGroupId: worldId,
+      name: '青禾',
+      role: 'npc',
+      roleWeight: 'npc',
+      moralAxis: 'neutral',
+      orderAxis: 'lawful',
+      shortDescription: '守门人',
+      personality: '谨慎但重诺',
+      background: '',
+      motivation: '',
+      abilities: '',
+      appearance: '',
+      relationships: '',
+      arc: '',
+      createdAt: now,
+      updatedAt: now,
+    } as any) as number
+    await db.characters.add({
+      projectId,
+      homeWorldGroupId: worldId,
+      name: '旁人',
+      role: 'npc',
+      roleWeight: 'npc',
+      moralAxis: 'neutral',
+      orderAxis: 'neutral',
+      shortDescription: '不应进入目标上下文',
+      personality: '',
+      background: '',
+      motivation: '',
+      abilities: '',
+      appearance: '',
+      relationships: '',
+      arc: '',
+      createdAt: now,
+      updatedAt: now,
+    } as any)
+
+    const assembled = await assembleContext({
+      projectId,
+      worldGroupId: worldId,
+      characterId: targetId,
+      sourceKeys: ['targetCharacter'],
+    })
+
+    expect(assembled.text).toContain('青禾')
+    expect(assembled.text).toContain('谨慎但重诺')
+    expect(assembled.text).toContain('背景故事：（未填写）')
+    expect(assembled.text).not.toContain('旁人')
+    expect(assembled.sourceEvidence?.[0]).toMatchObject({
+      key: 'targetCharacter',
+      status: 'included',
+      delivery: 'full',
+    })
+    expect(assembled.sourceEvidence?.[0]?.sourceHash).toMatch(/^[a-f0-9]{64}$/)
+  })
+
   it('worldGroupId 为 null 时世界观/力量体系可回退到项目首条，非 null 仍严格隔离', async () => {
     const now = Date.now()
     const projectId = await createProject()
@@ -184,7 +248,7 @@ describe('Phase 1.3a · 统一上下文装配层', () => {
     expect(assembled.text).not.toContain('雾钟')
   })
 
-  it('historical source 按 worldGroupId 读取当前世界 + 全局旧数据', async () => {
+  it('historical source 按 worldGroupId 精确读取当前世界，不混入默认世界旧数据', async () => {
     const now = Date.now()
     const projectId = await createProject()
     const worldA = await db.worldGroups.add({
@@ -214,8 +278,8 @@ describe('Phase 1.3a · 统一上下文装配层', () => {
     expect(assembled.included).toEqual(['historical'])
     expect(assembled.text).toContain('镜城开埠')
     expect(assembled.text).toContain('镜税')
-    expect(assembled.text).toContain('全局旧史')
-    expect(assembled.text).toContain('通用礼法')
+    expect(assembled.text).not.toContain('全局旧史')
+    expect(assembled.text).not.toContain('通用礼法')
     expect(assembled.text).not.toContain('雾钟敲响')
     expect(assembled.text).not.toContain('雾钟')
   })

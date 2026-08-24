@@ -76,9 +76,26 @@ export type NovelGenre = string
 /** 创作模式 */
 export type CreativeMode = 'fantasy' | 'historical'
 
+export type CommunityWorldLicense =
+  | 'CC-BY-4.0'
+  | 'CC-BY-SA-4.0'
+  | 'CC-BY-NC-4.0'
+  | 'ALL-RIGHTS-RESERVED'
+
+export interface CommunityWorldOrigin {
+  packageId: string
+  sourceWorldCode: string
+  sourceWorldVersion: number
+  authorName: string
+  license: CommunityWorldLicense
+  importedAt: number
+}
+
 /** 项目 */
 export interface Project {
   id?: number
+  /** MEMORY-1: immutable portable identity for this LocalWorkspace. */
+  workspaceUid?: string
   name: string
   /** 兼容旧数据的单选流派（保留此字段避免旧代码报错，值始终有效） */
   genre: string
@@ -108,6 +125,25 @@ export interface Project {
   // ── Phase 25.4 多世界 ──
   /** 是否启用多世界模式（默认 false） */
   enableMultiWorld?: boolean
+
+  /** 世界引擎公开编号。旧项目缺失时由项目 store 生成并持久化。 */
+  worldCode?: string
+  /** 世界引擎当前发布版本，首版为 1。 */
+  worldVersion?: number
+  /** PLATFORM-1：从社区世界包导入时保留来源，本地副本仍分配自己的 worldCode。 */
+  communityOrigin?: CommunityWorldOrigin
+
+  /** WORLD-2C：当前世界/作品兼容指针；尚未首次进入的旧工作区允许缺失。 */
+  activeWorldId?: number | null
+  activeWorkId?: number | null
+  /** WORLD-2C ownership 合同版本；缺失表示尚未执行惰性迁移。 */
+  ownershipSchemaVersion?: number
+
+  /** Phase 34：把作者确认的正文修炼进度注入后续 AI 写作；默认关闭。 */
+  includeCultivationProgressInAI?: boolean
+
+  /** STORY-1：作者明确设为后续 AI 参考的角色驱动方案；不自动猜最近方案。 */
+  activeCharacterDrivenPlanId?: number | null
 
   createdAt: number        // timestamp
   updatedAt: number        // timestamp

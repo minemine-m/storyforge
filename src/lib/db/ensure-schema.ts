@@ -2,15 +2,29 @@ import Dexie from 'dexie'
 
 export const REQUIRED_TABLES = [
   'aiUsageLog',
+  'agentConversations',
+  'agentEvents',
+  'agentRunCheckpoints',
+  'agentRunEvents',
+  'agentRuns',
+  'adventureModules',
+  'avgMediaAssets',
+  'avgMediaBlobs',
+  'avgPresentationModules',
   'chapters',
   'characterRelations',
+  'characterDrivenPlans',
   'characters',
   'codexCategories',
   'codexEntries',
   'creativeRules',
+  'cultivationSystems',
+  'cultivationProgress',
   'detailedOutlines',
   'emotionBeatCards',
   'foreshadows',
+  'gameDefinitions',
+  'gameReleases',
   'geographies',
   'historicalKeywords',
   'historicalTimelineEvents',
@@ -19,22 +33,42 @@ export const REQUIRED_TABLES = [
   'importJobs',
   'importLogs',
   'importSessions',
+  'inspirationWorkspaces',
   'importantLocations',
+  'interactionCharacterProfiles',
+  'interactionSceneTemplates',
   'itemLedger',
+  'knowledgeLedger',
   'notes',
+  'narrativeModules',
+  'narrativeBeats',
+  'narrativeChoices',
+  'narrativeNodes',
   'narrativeSummaryNodes',
+  'narrativeSimulationModules',
+  'openWorldModules',
+  'nodeFlows',
+  'nodeRuns',
+  'ownershipMigrations',
   'outlineNodes',
   'powerSystems',
   'projects',
   'promptTemplates',
   'promptWorkflows',
   'referenceChunkAnalysis',
+  'referenceAnalysisRuns',
+  'referenceAnalysisSources',
   'references',
   'retrievalChunks',
   'snapshots',
+  'simulationCheckpoints',
+  'simulationEvents',
+  'simulationSessions',
   'stateCards',
   'storyArcs',
   'storyCores',
+  'storylineCrossings',
+  'storylineProgress',
   'storyTimelineEvents',
   'temporalFacts',
   'userStyleProfiles',
@@ -42,7 +76,13 @@ export const REQUIRED_TABLES = [
   'worldGroups',
   'worldNodes',
   'worldRulesProfiles',
+  'worldReleases',
+  'worldRevisions',
   'worldviews',
+  'worlds',
+  'workCharacterBindings',
+  'works',
+  'workspaceDocuments',
 ] as const
 
 export interface EnsureSchemaOptions {
@@ -50,6 +90,8 @@ export interface EnsureSchemaOptions {
   allowReset?: boolean
   /** Tests can disable browser alert while still asserting non-destructive behavior. */
   notifyUser?: boolean
+  /** Latest Dexie version. Older databases may be upgraded and must not be treated as corrupt. */
+  expectedVersion?: number
 }
 
 /**
@@ -71,7 +113,7 @@ export async function ensureSchema(
   options: EnsureSchemaOptions = {},
 ): Promise<{ reset: boolean; missing: string[]; blocked: boolean }> {
   const dbName = 'storyforge'
-  const { allowReset = false, notifyUser = true } = options
+  const { allowReset = false, notifyUser = true, expectedVersion } = options
 
   // 1. 检查 DB 是否存在 + 当前 schema
   const info = await probeDatabase(dbName)
@@ -84,6 +126,16 @@ export async function ensureSchema(
   if (missing.length === 0) {
     // 全部期望表都在
     return { reset: false, missing: [], blocked: false }
+  }
+
+  // A lower schema version is a normal release upgrade. Dexie will create the
+  // missing stores transactionally in db.open(); resetting or warning here would
+  // misclassify every legitimate production upgrade as database corruption.
+  if (expectedVersion != null && info.version < expectedVersion) {
+    console.info(
+      `[schema] DB v${info.version} will upgrade to v${expectedVersion}; pending stores: [${missing.join(', ')}]`,
+    )
+    return { reset: false, missing, blocked: false }
   }
 
   if (!allowReset) {

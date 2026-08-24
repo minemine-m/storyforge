@@ -42,9 +42,18 @@ describe('R-CF20260702-10 · task classification and resolution', () => {
     ['import.parse-chunk', 'extraction'],
     ['reference.analysis', 'analysis'],
     ['style.learn', 'analysis'],
+    ['style.calibrate', 'creation'],
     ['review.quality', 'review'],
     ['chapter.deai', 'review'],
     ['scene.verify', 'review'],
+    ['agent.readonly', 'review'],
+    ['agent.orchestrator', 'agent-orchestrator'],
+    ['agent.world-origin', 'agent-world-origin'],
+    ['agent.character', 'agent-character'],
+    ['agent.inspiration', 'agent-inspiration'],
+    ['agent.outline', 'agent-outline'],
+    ['agent.prose', 'agent-prose'],
+    ['node.creation', 'creation'],
   ] as const)('classifies %s as %s', (category, taskKind) => {
     expect(classifyAITask(category)).toBe(taskKind)
   })
@@ -95,6 +104,48 @@ describe('R-CF20260702-10 · task classification and resolution', () => {
       expect(resolved.presetId).toBe(presetId)
       expect(resolved.config.model).toBe(`${presetId}-model`)
       expect(resolved.config.maxTokens).toBe(16_384)
+    }
+  })
+
+  it('routes every主 Agent role independently without changing manual creation routing', () => {
+    const presets = [
+      preset('manual-creation'),
+      preset('planner'),
+      preset('world'),
+      preset('character'),
+      preset('inspiration'),
+      preset('outline'),
+      preset('prose'),
+    ]
+    const routes = {
+      creation: 'manual-creation',
+      'agent-orchestrator': 'planner',
+      'agent-world-origin': 'world',
+      'agent-character': 'character',
+      'agent-inspiration': 'inspiration',
+      'agent-outline': 'outline',
+      'agent-prose': 'prose',
+    } as const
+    const cases = [
+      ['chapter.content', 'manual-creation'],
+      ['agent.orchestrator', 'planner'],
+      ['agent.world-origin', 'world'],
+      ['agent.character', 'character'],
+      ['agent.inspiration', 'inspiration'],
+      ['agent.outline', 'outline'],
+      ['agent.prose', 'prose'],
+    ] as const
+    for (const [category, presetId] of cases) {
+      const resolved = resolveAIConfigForTask({
+        category,
+        requestedConfig: globalConfig,
+        globalConfig,
+        presets,
+        routes,
+      })
+      expect(resolved.taskKind).toBe(category === 'chapter.content' ? 'creation' : `agent-${category.slice(6)}`)
+      expect(resolved.presetId).toBe(presetId)
+      expect(resolved.config.model).toBe(`${presetId}-model`)
     }
   })
 
@@ -156,6 +207,79 @@ describe('R-CF20260702-10 · route storage and client boundary', () => {
     expect(JSON.parse(localStorage.getItem(TASK_ROUTES_KEY) || '{}')).toEqual({})
   })
 
+  it('persists a主 Agent role route and keeps old four-kind storage backward compatible', async () => {
+    const { useAIConfigStore, TASK_ROUTES_KEY } = await import('../../src/stores/ai-config')
+    const id = useAIConfigStore.getState().saveAsPreset('正文 Agent 模型')
+    useAIConfigStore.getState().setTaskRoute('agent-prose', id)
+    const stored = JSON.parse(localStorage.getItem(TASK_ROUTES_KEY) || '{}')
+    expect(stored).toEqual({ 'agent-prose': id })
+
+    localStorage.setItem(TASK_ROUTES_KEY, JSON.stringify({
+      creation: id,
+      'agent-prose': id,
+      'future-unknown-route': id,
+    }))
+    vi.resetModules()
+    const fresh = await import('../../src/stores/ai-config')
+    expect(fresh.useAIConfigStore.getState().taskRoutes).toEqual({
+      creation: id,
+      'agent-prose': id,
+    })
+  })
+
+  it('persists safe Agent context profiles and sanitizes unknown values', async () => {
+    const {
+      AGENT_CONTEXT_PROFILES_KEY,
+      useAIConfigStore,
+    } = await import('../../src/stores/ai-config')
+    expect(useAIConfigStore.getState().agentContextProfiles['agent-prose']).toBe('balanced')
+    useAIConfigStore.getState().setAgentContextProfile('agent-prose', 'lean')
+    expect(JSON.parse(localStorage.getItem(AGENT_CONTEXT_PROFILES_KEY) || '{}')['agent-prose']).toBe('lean')
+
+    localStorage.setItem(AGENT_CONTEXT_PROFILES_KEY, JSON.stringify({
+      'agent-prose': 'lean',
+      'agent-outline': 'unbounded',
+      'future-agent': 'full',
+    }))
+    vi.resetModules()
+    const fresh = await import('../../src/stores/ai-config')
+    expect(fresh.useAIConfigStore.getState().agentContextProfiles).toMatchObject({
+      'agent-prose': 'lean',
+      'agent-outline': 'balanced',
+    })
+    expect(fresh.useAIConfigStore.getState().agentContextProfiles).not.toHaveProperty('future-agent')
+  })
+
+  it('persists a bounded Agent team budget profile and falls back to balanced', async () => {
+    const {
+      AGENT_TEAM_BUDGET_PROFILE_KEY,
+      useAIConfigStore,
+    } = await import('../../src/stores/ai-config')
+    expect(useAIConfigStore.getState().agentTeamBudgetProfile).toBe('balanced')
+    useAIConfigStore.getState().setAgentTeamBudgetProfile('economy')
+    expect(localStorage.getItem(AGENT_TEAM_BUDGET_PROFILE_KEY)).toBe('economy')
+
+    localStorage.setItem(AGENT_TEAM_BUDGET_PROFILE_KEY, 'unlimited')
+    vi.resetModules()
+    const fresh = await import('../../src/stores/ai-config')
+    expect(fresh.useAIConfigStore.getState().agentTeamBudgetProfile).toBe('balanced')
+  })
+
+  it('persists a bounded creative quality mode and falls back to balanced', async () => {
+    const {
+      CREATIVE_QUALITY_MODE_KEY,
+      useAIConfigStore,
+    } = await import('../../src/stores/ai-config')
+    expect(useAIConfigStore.getState().creativeQualityMode).toBe('balanced')
+    useAIConfigStore.getState().setCreativeQualityMode('economy')
+    expect(localStorage.getItem(CREATIVE_QUALITY_MODE_KEY)).toBe('economy')
+
+    localStorage.setItem(CREATIVE_QUALITY_MODE_KEY, 'unlimited')
+    vi.resetModules()
+    const fresh = await import('../../src/stores/ai-config')
+    expect(fresh.useAIConfigStore.getState().creativeQualityMode).toBe('balanced')
+  })
+
   it('routes a real chat request and logs the actual provider, model and task kind', async () => {
     const routed = preset('local-writer', {
       provider: 'ollama',
@@ -203,6 +327,41 @@ describe('R-CF20260702-10 · route storage and client boundary', () => {
         outputTokens: 7,
       })
     })
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('routes through an inactive session-only preset without leaking its Key to localStorage', async () => {
+    const { useAIConfigStore } = await import('../../src/stores/ai-config')
+    useAIConfigStore.getState().setConfig({
+      provider: 'agnes',
+      model: 'agnes-2.5-flash',
+      baseUrl: 'https://agnes-route.invalid/v1',
+      apiKey: 'agnes-session-route-key',
+    })
+    const agnesId = useAIConfigStore.getState().saveAsPreset('Agnes 审查')
+    useAIConfigStore.getState().setTaskRoute('review', agnesId)
+    useAIConfigStore.getState().setConfig({
+      provider: 'doubao',
+      model: 'doubao-1-5-pro-32k-250115',
+      baseUrl: 'https://doubao-global.invalid/v1',
+      apiKey: 'doubao-current-key',
+    })
+    expect(JSON.parse(localStorage.getItem('storyforge-ai-presets') || '[]')[0].config.apiKey).toBe('')
+
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toBe('https://agnes-route.invalid/v1/chat/completions')
+      expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer agnes-session-route-key')
+      expect(JSON.parse(String(init?.body)).model).toBe('agnes-2.5-flash')
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { chat } = await import('../../src/lib/ai/client')
+
+    await expect(chat(
+      [{ role: 'user', content: 'review' }],
+      useAIConfigStore.getState().config,
+      { category: 'review.quality' },
+    )).resolves.toBe('ok')
     expect(fetchMock).toHaveBeenCalledOnce()
   })
 })

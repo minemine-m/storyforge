@@ -3,7 +3,7 @@
  *
  * 集成三套质量检测：审校(F1)、去AI味(F2)、追读力(F3)
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { X, ShieldCheck, Bot, TrendingUp, Loader2, AlertTriangle, AlertCircle, Info, Wand2, ScanSearch } from 'lucide-react'
 import { useAIStream } from '../../hooks/useAIStream'
 import { createAISessionKey } from '../../stores/ai-generation-session'
@@ -12,13 +12,17 @@ import { buildReviewPrompt, parseReviewResult, REVIEW_DIMENSION_LABELS, type Rev
 import { buildAntiAIPrompt, parseAntiAIResult, ANTI_AI_DIMENSION_LABELS, extractHighFreqWords, type AntiAIResult } from '../../lib/ai/adapters/anti-ai-adapter'
 import { buildReadabilityPrompt, parseReadabilityResult, READABILITY_DIMENSION_LABELS, type ReadabilityResult } from '../../lib/ai/adapters/readability-adapter'
 import {
-  buildConsistencyAuditPrompt,
-  parseConsistencyAuditResult,
   type ConsistencyAuditMode,
   type ConsistencyAuditResult,
 } from '../../lib/ai/adapters/consistency-audit-adapter'
-import { assembleContext } from '../../lib/registry/assemble-context'
-import { checkHeldItemAcquisition, readProjectHeldItems } from '../../lib/consistency/held-items'
+import {
+  toConsistencyAuditResult,
+  type ConsistencyAgentRun,
+} from '../../lib/agent/consistency-agent'
+import { AgentTeamBudgetTracker } from '../../lib/agent/team-budget'
+import { runDurableConsistencyAuditV1 } from '../../lib/agent/run/consistency-audit-durable'
+import { resolveScopeLike } from '../../lib/world-engine/scope'
+import { useAIConfigStore } from '../../stores/ai-config'
 
 interface Props {
   projectId: number
@@ -38,6 +42,10 @@ interface Props {
   onClose: () => void
   /** G8：按审校报告让 AI 改全文（交给 ChapterEditor 走标准生成→采纳流程） */
   onReviseByReport?: (report: ReviewResult) => void
+  consistencyRun?: ConsistencyAgentRun | null
+  consistencyCurrent?: boolean
+  onConsistencyRun?: (run: ConsistencyAgentRun) => void
+  onBeforeConsistencyRun?: () => Promise<void>
 }
 
 type TabType = ReviewTab
@@ -55,6 +63,11 @@ export default function ReviewPanel(props: Props) {
 
   const ai = useAIStream(createAISessionKey(projectId, 'review.run', chapterId))
   const [auditMode, setAuditMode] = useState<ConsistencyAuditMode>('fast')
+  const [consistencyRunning, setConsistencyRunning] = useState(false)
+  const [consistencyError, setConsistencyError] = useState('')
+  const [localConsistencyRun, setLocalConsistencyRun] = useState<ConsistencyAgentRun | null>(
+    props.consistencyRun ?? null,
+  )
 
   // 结果与当前标签都存 store（按 chapterId），故收起再展开 / 切一级标签回来都还在
   const cached = useReviewResultStore(selectChapterReview(chapterId))
@@ -70,6 +83,13 @@ export default function ReviewPanel(props: Props) {
   const setReadability = useReviewResultStore(s => s.setReadability)
   const setConsistency = useReviewResultStore(s => s.setConsistency)
   const setActiveTab = (tab: TabType) => useReviewResultStore.getState().setActiveTab(chapterId, tab)
+
+  useEffect(() => {
+    setLocalConsistencyRun(props.consistencyRun ?? null)
+    if (props.consistencyRun) {
+      setConsistency(chapterId, toConsistencyAuditResult(props.consistencyRun.candidate))
+    }
+  }, [chapterId, props.consistencyRun, setConsistency])
 
   const handleRunReview = async () => {
     const messages = buildReviewPrompt(
@@ -99,59 +119,44 @@ export default function ReviewPanel(props: Props) {
   }
 
   const handleRunConsistency = async () => {
-    const evidence = await assembleContext({
-      projectId,
-      chapterId,
-      outlineNodeId: outlineNodeId ?? undefined,
-      worldGroupId,
-      sourceKeys: [
-        'chapterContinuityHandoff',
-        'previousPlanReconciliation',
-        'recentChapterSummaries',
-        'currentFacts',        // NS-6 闭环：用生成时遵循的同一套已确认事实核对（canon/observation 证据）
-        'retrievedPassages',   // NS-6 闭环：召回远距前文，抓几百章前的细节/伏笔矛盾
-        'worldRules',
-        'characters',
-        'stateCards',
-        'heldItems',
-        'itemLedger',
-        'storyTimeline',
-        'characterRelations',
-        'foreshadows',
-        'storyArcs',
-      ],
-    })
-    const messages = buildConsistencyAuditPrompt({
-      mode: auditMode,
-      chapterTitle,
-      chapterContent,
-      evidenceContext: evidence.text,
-    })
-    const output = await ai.start(messages, undefined, {
-      category: auditMode === 'fast' ? 'review.consistency.fast' : 'review.consistency.deep',
-      projectId,
-    })
-    const result = parseConsistencyAuditResult({
-      raw: output,
-      mode: auditMode,
-      chapterContent,
-      evidenceContext: evidence.text,
-    })
-    const deterministicFindings = await buildDeterministicConsistencyFindings({
-      projectId,
-      chapterId,
-      worldGroupId,
-      chapterContent,
-    })
-    const merged: ConsistencyAuditResult = {
-      mode: auditMode,
-      findings: [...deterministicFindings, ...(result?.findings ?? [])],
+    setConsistencyError('')
+    setConsistencyRunning(true)
+    try {
+      await props.onBeforeConsistencyRun?.()
+      const config = useAIConfigStore.getState().config
+      const budget = new AgentTeamBudgetTracker(
+        useAIConfigStore.getState().agentTeamBudgetProfile,
+      )
+      const result = await runDurableConsistencyAuditV1({
+        scope: await resolveScopeLike(projectId),
+        chapterId,
+        outlineNodeId,
+        worldGroupId: worldGroupId ?? null,
+        chapterTitle,
+        chapterContent,
+        mode: auditMode,
+        provider: config.provider,
+        model: config.model,
+        budget,
+        call: messages => ai.start(messages, undefined, {
+          category: auditMode === 'fast' ? 'review.consistency.fast' : 'review.consistency.deep',
+          projectId,
+          configOverrides: { maxTokens: auditMode === 'fast' ? 4_000 : 6_000 },
+        }),
+      })
+      const { run, candidate } = result
+      setLocalConsistencyRun(run)
+      setConsistency(chapterId, toConsistencyAuditResult(candidate))
+      props.onConsistencyRun?.(run)
+    } catch (error) {
+      setConsistencyError(error instanceof Error ? error.message : '一致性 Agent 运行失败')
+    } finally {
+      setConsistencyRunning(false)
     }
-    setConsistency(chapterId, merged)
   }
 
   const handleRun = () => {
-    if (activeTab === 'consistency') handleRunConsistency()
+    if (activeTab === 'consistency') void handleRunConsistency()
     else if (activeTab === 'review') handleRunReview()
     else if (activeTab === 'antiAI') handleRunAntiAI()
     else handleRunReadability()
@@ -160,6 +165,8 @@ export default function ReviewPanel(props: Props) {
   const currentResult = activeTab === 'consistency' ? consistencyResult
     : activeTab === 'review' ? reviewResult
     : activeTab === 'antiAI' ? antiAIResult : readabilityResult
+
+  const consistencyMeta = localConsistencyRun?.candidate
 
   return (
     <div className="bg-bg-surface border border-border rounded-xl overflow-hidden shadow-lg">
@@ -186,7 +193,7 @@ export default function ReviewPanel(props: Props) {
           {activeTab === 'review' && reviewResult && onReviseByReport && (
             <button
               onClick={() => onReviseByReport(reviewResult)}
-              disabled={ai.isStreaming}
+              disabled={ai.isStreaming || consistencyRunning}
               title="让 AI 按上面的审校报告修改全文，结果会先预览"
               className="flex items-center gap-1 px-3 py-1.5 text-xs bg-emerald-500/10 text-emerald-400 rounded-md hover:bg-emerald-500/20 disabled:opacity-50 transition-colors"
             >
@@ -196,11 +203,11 @@ export default function ReviewPanel(props: Props) {
           )}
           <button
             onClick={handleRun}
-            disabled={ai.isStreaming || !chapterContent}
+            disabled={ai.isStreaming || consistencyRunning || !chapterContent}
             className="flex items-center gap-1 px-3 py-1.5 text-xs bg-accent text-white rounded-md hover:bg-accent-hover disabled:opacity-50 transition-colors"
           >
-            {ai.isStreaming ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-            {ai.isStreaming ? '检测中...' : '开始检测'}
+            {ai.isStreaming || consistencyRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+            {ai.isStreaming || consistencyRunning ? '检测中...' : '开始检测'}
           </button>
           <button onClick={onClose} className="p-1 text-text-muted hover:text-text-primary rounded">
             <X className="w-4 h-4" />
@@ -226,11 +233,35 @@ export default function ReviewPanel(props: Props) {
             ))}
           </div>
         )}
-        {ai.error && (
-          <div className="text-xs text-error bg-error/10 px-3 py-2 rounded-lg mb-3">{ai.error}</div>
+        {activeTab === 'consistency' && consistencyMeta && (
+          <div className={`mb-3 rounded-lg border px-3 py-2 text-[11px] ${
+            props.consistencyCurrent === false
+              ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+              : 'border-border bg-bg-base text-text-muted'
+          }`}>
+            <p>
+              {props.consistencyCurrent === false ? '正文已变化，以下报告已过期。' : '当前正文报告'}
+              {' · '}{consistencyMeta.mode === 'background' ? '自动 Fast Guard' : consistencyMeta.mode === 'fast' ? 'Fast Guard' : 'Deep Audit'}
+              {' · '}{consistencyMeta.budget.calls}/{consistencyMeta.budget.maxCalls} 次模型调用
+              {' · '}约 {consistencyMeta.budget.usedTokens.toLocaleString()} / {consistencyMeta.budget.maxTokens.toLocaleString()} tokens
+            </p>
+            {consistencyMeta.context.included.length > 0 && (
+              <p className="mt-1">
+                输入证据 {consistencyMeta.context.inputTokens.toLocaleString()} / {consistencyMeta.context.inputBudget.toLocaleString()} tokens
+                {' · '}纳入 {consistencyMeta.context.included.length}
+                {' · '}省略 {consistencyMeta.context.omitted.length}
+                {' · '}裁剪 {consistencyMeta.context.trimmed.length}
+              </p>
+            )}
+          </div>
+        )}
+        {(ai.error || consistencyError) && (
+          <div className="text-xs text-error bg-error/10 px-3 py-2 rounded-lg mb-3">
+            {consistencyError || ai.error}
+          </div>
         )}
 
-        {!currentResult && !ai.isStreaming && (
+        {!currentResult && !ai.isStreaming && !consistencyRunning && (
           <div className="text-center py-8 text-text-muted text-sm">
             点击「开始检测」运行{activeTab === 'consistency' ? (auditMode === 'fast' ? ' Fast Guard' : ' Deep Audit') : activeTab === 'review' ? '审校' : activeTab === 'antiAI' ? '去AI味检测' : '追读力评估'}
           </div>
@@ -272,16 +303,6 @@ export default function ReviewPanel(props: Props) {
       </div>
     </div>
   )
-}
-
-async function buildDeterministicConsistencyFindings(args: {
-  projectId: number
-  chapterId: number
-  worldGroupId?: number | null
-  chapterContent: string
-}): Promise<ConsistencyAuditResult['findings']> {
-  const heldItems = await readProjectHeldItems(args.projectId, args.chapterId, args.worldGroupId)
-  return checkHeldItemAcquisition(args.chapterContent, heldItems)
 }
 
 function ConsistencyResultView({ result }: { result: ConsistencyAuditResult }) {

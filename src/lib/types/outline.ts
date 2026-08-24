@@ -1,3 +1,5 @@
+import type { RagDocumentMetadata } from './rag-library'
+
 /** 大纲节点类型 */
 export type OutlineNodeType =
   | 'volume'      // 卷
@@ -89,7 +91,7 @@ export interface ChapterPlanReconciliation {
 }
 
 /** 章节 */
-export interface Chapter {
+export interface Chapter extends RagDocumentMetadata {
   id?: number
   projectId: number
   outlineNodeId: number      // 关联的大纲节点
@@ -99,6 +101,8 @@ export interface Chapter {
   status: ChapterStatus
   order: number
   notes: string              // 作者笔记
+  /** 作者明确选择的叙事视角角色；null/缺省时正文生成不得注入全体角色认知。 */
+  perspectiveCharacterId?: number | null
   /** Phase A3: 章节摘要（100-200字），用于三层记忆的 Working Memory */
   summary?: string
   /** NS-1: 下一章直接承接所需的派生记忆；非 Canon。 */

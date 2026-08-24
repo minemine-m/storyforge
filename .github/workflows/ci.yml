@@ -14,12 +14,12 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -36,6 +36,15 @@ jobs:
 
       - name: 源码可达性(防孤儿文件回潮)
         run: npm run check:source-reachability
+
+      - name: 路线图迁移与文档链接完整性
+        run: npm run check:roadmap
+
+      - name: Blueprint 实时规模与代码一致
+        run: npm run check:project-metrics
+
+      - name: 生产依赖漏洞门槛
+        run: npm run check:dependencies
 
       - name: ESLint 零 warning
         run: npm run lint
